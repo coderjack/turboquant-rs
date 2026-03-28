@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/turboquant",
+    "crates/agent-memory",
+    "crates/codesearch-mcp",
+    "crates/memory-mcp",
+]
+resolver = "2"

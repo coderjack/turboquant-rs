@@ -1,0 +1,19 @@
+[package]
+name = "memory-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server exposing agent-memory: semantic recall, ingest, and session context management for AI coding agents"
+
+[dependencies]
+agent-memory = { path = "../agent-memory" }
+turboquant = { path = "../turboquant" }
+rmcp = { version = "1.3", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+glob = "0.3"
