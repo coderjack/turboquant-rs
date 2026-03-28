@@ -2,6 +2,8 @@
 name = "memory-mcp"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
 description = "MCP server exposing agent-memory: semantic recall, ingest, and session context management for AI coding agents"
 
 [dependencies]

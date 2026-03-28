@@ -2,7 +2,9 @@
 name = "turboquant"
 version = "0.1.0"
 edition = "2021"
-description = "TurboQuant vector compression: QJL (1-bit) + PolarQuant (4-bit angles + 8-bit radii) with two-stage search"
+license.workspace = true
+repository.workspace = true
+description = "TurboQuant vector compression: QJL (1-bit) + TurboQuant_mse (2-4 bit optimal scalar quantization) with two-stage search"
 
 [dependencies]
 ndarray = "0.16"

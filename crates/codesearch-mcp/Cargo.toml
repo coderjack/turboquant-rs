@@ -2,6 +2,8 @@
 name = "codesearch-mcp"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
 description = "Semantic code search MCP server using TurboQuant-compressed bge-code-v1 embeddings"
 
 [dependencies]
