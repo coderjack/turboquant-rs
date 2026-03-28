@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TurboQuant - How It Works</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; overflow-x: hidden; }
+
+  .hero { text-align: center; padding: 80px 20px 40px; }
+  .hero h1 { font-size: 3em; font-weight: 800; background: linear-gradient(135deg, #6ee7b7, #3b82f6, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .hero p { color: #888; font-size: 1.2em; margin-top: 12px; max-width: 600px; margin-inline: auto; }
+
+  .section { max-width: 900px; margin: 0 auto; padding: 60px 24px; }
+  .section h2 { font-size: 1.8em; font-weight: 700; margin-bottom: 8px; }
+  .section h2 .tag { font-size: 0.5em; padding: 4px 10px; border-radius: 20px; vertical-align: middle; margin-left: 8px; font-weight: 600; }
+  .section .subtitle { color: #888; margin-bottom: 32px; font-size: 1.05em; }
+
+  .stage-container { position: relative; background: #12121a; border: 1px solid #222; border-radius: 16px; padding: 32px; margin-bottom: 40px; overflow: hidden; }
+  .stage-container::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #3b82f6, transparent); }
+
+  /* Vector visualization */
+  .vector-row { display: flex; gap: 3px; justify-content: center; flex-wrap: wrap; margin: 20px 0; }
+  .vector-cell { width: 28px; height: 28px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 0.55em; font-weight: 600; transition: all 0.4s ease; }
+  .vector-cell.float { background: #1e3a5f; color: #7cb8ff; border: 1px solid #2a5a8f; }
+  .vector-cell.bit-0 { background: #1a1a2e; color: #555; border: 1px solid #333; }
+  .vector-cell.bit-1 { background: #2d6a4f; color: #6ee7b7; border: 1px solid #40916c; }
+  .vector-cell.angle { background: #4a1942; color: #e879a8; border: 1px solid #6b2158; }
+  .vector-cell.radius { background: #3d2b1f; color: #f0a860; border: 1px solid #5a3f2e; }
+
+  .step-label { text-align: center; color: #666; font-size: 0.85em; margin: 8px 0 16px; font-style: italic; }
+  .arrow-down { text-align: center; font-size: 1.5em; color: #3b82f6; margin: 16px 0; animation: pulse-arrow 2s infinite; }
+  @keyframes pulse-arrow { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+  /* Animation controls */
+  .controls { display: flex; gap: 12px; justify-content: center; margin: 24px 0 8px; }
+  .btn { padding: 10px 24px; border-radius: 8px; border: 1px solid #333; background: #1a1a2e; color: #e0e0e0; cursor: pointer; font-size: 0.9em; font-weight: 600; transition: all 0.2s; }
+  .btn:hover { background: #252540; border-color: #3b82f6; }
+  .btn.active { background: #1e3a5f; border-color: #3b82f6; color: #7cb8ff; }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .step-indicator { display: flex; gap: 8px; justify-content: center; margin: 16px 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #333; transition: all 0.3s; }
+  .dot.active { background: #3b82f6; box-shadow: 0 0 8px #3b82f680; }
+
+  /* Comparison bars */
+  .compare-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+  .compare-label { width: 100px; text-align: right; font-size: 0.85em; color: #888; }
+  .compare-bar { height: 24px; border-radius: 4px; transition: width 1s ease; display: flex; align-items: center; padding-left: 8px; font-size: 0.75em; font-weight: 600; }
+
+  /* Two-stage search */
+  .search-pipeline { display: flex; align-items: center; justify-content: center; gap: 0; margin: 24px 0; flex-wrap: wrap; }
+  .pipeline-box { padding: 16px 20px; border-radius: 12px; text-align: center; min-width: 140px; position: relative; }
+  .pipeline-box .count { font-size: 1.8em; font-weight: 800; }
+  .pipeline-box .label { font-size: 0.75em; color: #888; margin-top: 4px; }
+  .pipeline-arrow { font-size: 1.4em; color: #3b82f6; padding: 0 4px; }
+  .box-query { background: #1e293b; border: 1px solid #334155; }
+  .box-qjl { background: #1a2e1a; border: 1px solid #2d6a4f; }
+  .box-polar { background: #2e1a2e; border: 1px solid #6b2158; }
+  .box-result { background: #1e3a5f; border: 1px solid #2a5a8f; }
+
+  /* Hamming animation */
+  .hamming-demo { display: flex; gap: 4px; justify-content: center; margin: 12px 0; }
+  .hamming-cell { width: 32px; height: 32px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 0.9em; font-weight: 700; transition: all 0.3s ease; }
+  .hamming-match { background: #2d6a4f; color: #6ee7b7; border: 1px solid #40916c; }
+  .hamming-diff { background: #5c1a1a; color: #f87171; border: 1px solid #7f1d1d; }
+
+  .size-comparison { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin: 24px 0; }
+  .size-card { background: #16161e; border: 1px solid #222; border-radius: 12px; padding: 20px; text-align: center; }
+  .size-card .size-value { font-size: 2em; font-weight: 800; }
+  .size-card .size-label { font-size: 0.8em; color: #888; margin-top: 4px; }
+
+  .tag-green { background: #16362b; color: #6ee7b7; }
+  .tag-purple { background: #2e1a3e; color: #a78bfa; }
+  .tag-blue { background: #1e3050; color: #60a5fa; }
+
+  .fade-in { opacity: 0; transform: translateY(20px); transition: all 0.6s ease; }
+  .fade-in.visible { opacity: 1; transform: translateY(0); }
+
+  .note { background: #16161e; border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; font-size: 0.9em; color: #aaa; }
+
+  @media (max-width: 600px) {
+    .hero h1 { font-size: 2em; }
+    .vector-cell { width: 22px; height: 22px; font-size: 0.45em; }
+    .size-comparison { grid-template-columns: 1fr; }
+    .search-pipeline { flex-direction: column; }
+    .pipeline-arrow { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>TurboQuant</h1>
+  <p>How to compress a 384-dimensional vector into a handful of bytes &mdash; and still find what you're looking for.</p>
+</div>
+
+<!-- ==================== QJL SECTION ==================== -->
+<div class="section" id="qjl-section">
+  <h2>Step 1: QJL Compression <span class="tag tag-green">1 bit/dim</span></h2>
+  <p class="subtitle">Quantized Johnson-Lindenstrauss &mdash; a fast fingerprint for vectors</p>
+
+  <div class="stage-container fade-in">
+    <div style="text-align:center; margin-bottom: 8px; font-weight: 600; color: #7cb8ff;">Original Vector (384 floats = 1,536 bytes)</div>
+    <div class="vector-row" id="qjl-original"></div>
+    <div class="step-label">Each cell is a 32-bit float like 0.42, -0.17, 0.88 ...</div>
+
+    <div class="arrow-down">&darr;</div>
+    <div style="text-align:center; margin-bottom: 4px; font-weight: 600; color: #aaa;">Multiply by random matrix R</div>
+    <div class="step-label">R is a fixed Gaussian matrix generated from a seed &mdash; same seed = same R everywhere</div>
+
+    <div class="arrow-down">&darr;</div>
+    <div style="text-align:center; margin-bottom: 4px; font-weight: 600; color: #aaa;">Keep only the sign: positive &rarr; 1, negative &rarr; 0</div>
+
+    <div class="arrow-down">&darr;</div>
+    <div style="text-align:center; margin-bottom: 8px; font-weight: 600; color: #6ee7b7;">Compressed: 384 bits = 48 bytes</div>
+    <div class="vector-row" id="qjl-compressed"></div>
+    <div class="step-label">32x smaller! Each dimension is now a single bit.</div>
+  </div>
+
+  <div class="stage-container fade-in">
+    <div style="text-align:center; margin-bottom: 16px; font-weight: 600; color: #aaa;">Comparing two vectors = counting different bits (Hamming distance)</div>
+
+    <div style="text-align:center; font-size: 0.85em; color: #6ee7b7; margin-bottom: 4px;">Vector A</div>
+    <div class="hamming-demo" id="hamming-a"></div>
+    <div style="text-align:center; font-size: 0.85em; color: #60a5fa; margin: 8px 0 4px;">Vector B</div>
+    <div class="hamming-demo" id="hamming-b"></div>
+    <div style="text-align:center; font-size: 0.85em; color: #aaa; margin: 8px 0 4px;">Match?</div>
+    <div class="hamming-demo" id="hamming-result"></div>
+    <div id="hamming-score" style="text-align:center; margin-top: 12px; font-size: 1.1em; font-weight: 700; color: #f87171;"></div>
+
+    <div class="controls">
+      <button class="btn" onclick="randomizeHamming()">Randomize</button>
+    </div>
+
+    <div class="note">
+      Similar vectors in the original space share most sign bits, so low Hamming distance &asymp; high cosine similarity. The CPU can compute this with a single XOR + popcount &mdash; blazing fast.
+    </div>
+  </div>
+</div>
+
+<!-- ==================== POLARQUANT SECTION ==================== -->
+<div class="section" id="polar-section">
+  <h2>Step 2: PolarQuant <span class="tag tag-purple">4-bit angles + 8-bit radii</span></h2>
+  <p class="subtitle">Polar coordinate compression &mdash; more bits, more accuracy</p>
+
+  <div class="stage-container fade-in">
+    <div style="text-align:center; margin-bottom: 16px; font-weight: 600; color: #7cb8ff;">How PolarQuant works</div>
+
+    <div id="polar-steps">
+      <div class="polar-step" data-step="0">
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">1. Rotate the vector</div>
+        <div class="step-label">Apply a random orthogonal rotation (preserves distances, decorrelates dimensions)</div>
+        <div class="vector-row" id="polar-rotated"></div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="polar-step" data-step="1">
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">2. Pair adjacent dimensions</div>
+        <div class="step-label">Group into 192 pairs: (d0,d1), (d2,d3), (d4,d5) ...</div>
+        <div style="display: flex; justify-content: center; gap: 8px; margin: 16px 0; flex-wrap: wrap;">
+          <div id="polar-pairs"></div>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="polar-step" data-step="2">
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">3. Convert each pair to polar coordinates</div>
+        <div class="step-label">(x, y) &rarr; (r, &theta;) where r = sqrt(x&sup2;+y&sup2;), &theta; = atan2(y, x)</div>
+        <canvas id="polar-canvas" width="280" height="280" style="display:block; margin: 16px auto; border-radius: 12px; background: #0d0d15;"></canvas>
+        <div style="text-align:center; font-size: 0.85em; color: #888;">Each dot is one (x,y) pair plotted in 2D. The grid shows quantization bins.</div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="polar-step" data-step="3">
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">4. Quantize</div>
+        <div style="display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; margin: 16px 0;">
+          <div style="text-align: center;">
+            <div style="color: #e879a8; font-weight: 600; margin-bottom: 8px;">Angles (4-bit = 16 levels)</div>
+            <div class="vector-row" id="polar-angles"></div>
+          </div>
+          <div style="text-align: center;">
+            <div style="color: #f0a860; font-weight: 600; margin-bottom: 8px;">Radii (8-bit = 256 levels)</div>
+            <div class="vector-row" id="polar-radii"></div>
+          </div>
+        </div>
+        <div class="step-label">192 angle nibbles (96 bytes) + 192 radii bytes = 288 bytes per vector</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TWO-STAGE SEARCH ==================== -->
+<div class="section" id="search-section">
+  <h2>Two-Stage Search <span class="tag tag-blue">Speed + Accuracy</span></h2>
+  <p class="subtitle">QJL narrows the field, PolarQuant picks the winners</p>
+
+  <div class="stage-container fade-in">
+    <div class="search-pipeline" id="search-pipeline">
+      <div class="pipeline-box box-query">
+        <div class="count">1</div>
+        <div class="label">Query vector</div>
+      </div>
+      <div class="pipeline-arrow">&rarr;</div>
+      <div class="pipeline-box box-qjl" id="pipe-qjl">
+        <div class="count" id="qjl-count">10,000</div>
+        <div class="label">QJL Hamming scan</div>
+      </div>
+      <div class="pipeline-arrow">&rarr;</div>
+      <div class="pipeline-box box-polar" id="pipe-polar">
+        <div class="count" id="polar-count">200</div>
+        <div class="label">PolarQuant re-rank</div>
+      </div>
+      <div class="pipeline-arrow">&rarr;</div>
+      <div class="pipeline-box box-result" id="pipe-result">
+        <div class="count" id="result-count">10</div>
+        <div class="label">Final results</div>
+      </div>
+    </div>
+
+    <div class="note" style="margin-top: 24px;">
+      <strong>Why two stages?</strong> QJL is extremely fast (XOR + popcount on packed bits) but approximate. PolarQuant is more accurate but slower. By using QJL to eliminate 98% of candidates first, we only run the expensive PolarQuant comparison on a small set &mdash; getting the best of both worlds.
+    </div>
+  </div>
+
+  <div class="stage-container fade-in">
+    <div style="text-align:center; margin-bottom: 16px; font-weight: 600; color: #aaa;">Size comparison for 10,000 vectors (384-dim)</div>
+
+    <div class="size-comparison">
+      <div class="size-card">
+        <div class="size-value" style="color: #f87171;">15 MB</div>
+        <div class="size-label">Raw float32</div>
+        <div style="margin-top: 8px;">
+          <div class="compare-bar" style="width: 100%; background: #5c1a1a; color: #f87171;">1,536 bytes/vec</div>
+        </div>
+      </div>
+      <div class="size-card">
+        <div class="size-value" style="color: #6ee7b7;">0.5 MB</div>
+        <div class="size-label">QJL (1-bit)</div>
+        <div style="margin-top: 8px;">
+          <div class="compare-bar" style="width: 3.1%; min-width: 80px; background: #1a3a2a; color: #6ee7b7;">48 bytes/vec</div>
+        </div>
+      </div>
+      <div class="size-card">
+        <div class="size-value" style="color: #a78bfa;">2.9 MB</div>
+        <div class="size-label">PolarQuant</div>
+        <div style="margin-top: 8px;">
+          <div class="compare-bar" style="width: 18.75%; min-width: 80px; background: #2a1a3a; color: #a78bfa;">288 bytes/vec</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MEMORY SECTION ==================== -->
+<div class="section">
+  <h2>How Agent Memory Uses This</h2>
+  <p class="subtitle">From text to compressed index to semantic recall</p>
+
+  <div class="stage-container fade-in">
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+      <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+        <div style="background: #1e293b; padding: 12px 16px; border-radius: 8px; flex: 1; min-width: 200px;">
+          <div style="font-weight: 600; color: #60a5fa; font-size: 0.85em;">INGEST</div>
+          <div style="color: #aaa; font-size: 0.85em; margin-top: 4px;">Document &rarr; ONNX embed &rarr; TurboIndex.insert()</div>
+        </div>
+        <div style="color: #3b82f6; font-size: 1.2em;">&rarr;</div>
+        <div style="background: #16362b; padding: 12px 16px; border-radius: 8px; flex: 1; min-width: 200px;">
+          <div style="font-weight: 600; color: #6ee7b7; font-size: 0.85em;">STORE</div>
+          <div style="color: #aaa; font-size: 0.85em; margin-top: 4px;">QJL bits + PolarQuant vectors on disk (mmap)</div>
+        </div>
+        <div style="color: #3b82f6; font-size: 1.2em;">&rarr;</div>
+        <div style="background: #2e1a3e; padding: 12px 16px; border-radius: 8px; flex: 1; min-width: 200px;">
+          <div style="font-weight: 600; color: #a78bfa; font-size: 0.85em;">RECALL</div>
+          <div style="color: #aaa; font-size: 0.85em; margin-top: 4px;">Query embed &rarr; two-stage search &rarr; ranked results</div>
+        </div>
+      </div>
+
+      <div class="note">
+        The MCP server exposes this as 4 simple tools: <code>memory_ingest</code>, <code>memory_recall</code>, <code>memory_sync</code>, <code>memory_stats</code>. Your AI agent calls these like any other tool &mdash; no vector math required.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="text-align: center; padding: 40px; color: #444; font-size: 0.85em;">
+  TurboQuant-RS &mdash; <a href="https://github.com/coderjack/turboquant-rs" style="color: #3b82f6; text-decoration: none;">github.com/coderjack/turboquant-rs</a>
+</div>
+
+<script>
+// ===== QJL Original Vector =====
+const qjlOriginal = document.getElementById('qjl-original');
+const qjlCompressed = document.getElementById('qjl-compressed');
+const NUM_DISPLAY = 48; // show 48 of 384
+
+function randFloat() { return (Math.random() * 2 - 1).toFixed(1); }
+
+for (let i = 0; i < NUM_DISPLAY; i++) {
+  const val = randFloat();
+  const cell = document.createElement('div');
+  cell.className = 'vector-cell float';
+  cell.textContent = val;
+  cell.style.animationDelay = `${i * 20}ms`;
+  qjlOriginal.appendChild(cell);
+
+  const bit = Math.random() > 0.5 ? 1 : 0;
+  const bitCell = document.createElement('div');
+  bitCell.className = `vector-cell bit-${bit}`;
+  bitCell.textContent = bit;
+  bitCell.style.animationDelay = `${i * 20}ms`;
+  qjlCompressed.appendChild(bitCell);
+}
+
+// Add "..." indicators
+for (const el of [qjlOriginal, qjlCompressed]) {
+  const dots = document.createElement('div');
+  dots.className = 'vector-cell';
+  dots.style.background = 'transparent';
+  dots.style.border = 'none';
+  dots.style.color = '#555';
+  dots.style.fontSize = '0.9em';
+  dots.textContent = '...';
+  el.appendChild(dots);
+}
+
+// ===== Hamming Distance Demo =====
+const hammingA = document.getElementById('hamming-a');
+const hammingB = document.getElementById('hamming-b');
+const hammingResult = document.getElementById('hamming-result');
+const hammingScore = document.getElementById('hamming-score');
+const HAMMING_LEN = 16;
+
+let bitsA = [], bitsB = [];
+
+function randomizeHamming() {
+  bitsA = Array.from({length: HAMMING_LEN}, () => Math.random() > 0.5 ? 1 : 0);
+  // Make B similar to A (flip ~25% of bits)
+  bitsB = bitsA.map(b => Math.random() < 0.25 ? (1 - b) : b);
+  renderHamming();
+}
+
+function renderHamming() {
+  hammingA.innerHTML = '';
+  hammingB.innerHTML = '';
+  hammingResult.innerHTML = '';
+  let dist = 0;
+
+  for (let i = 0; i < HAMMING_LEN; i++) {
+    const a = bitsA[i], b = bitsB[i];
+    const match = a === b;
+    if (!match) dist++;
+
+    const cellA = document.createElement('div');
+    cellA.className = `hamming-cell ${match ? 'hamming-match' : 'hamming-diff'}`;
+    cellA.textContent = a;
+    hammingA.appendChild(cellA);
+
+    const cellB = document.createElement('div');
+    cellB.className = `hamming-cell ${match ? 'hamming-match' : 'hamming-diff'}`;
+    cellB.textContent = b;
+    hammingB.appendChild(cellB);
+
+    const cellR = document.createElement('div');
+    cellR.className = `hamming-cell ${match ? 'hamming-match' : 'hamming-diff'}`;
+    cellR.textContent = match ? '=' : '\u2260';
+    hammingResult.appendChild(cellR);
+
+    // Stagger animation
+    [cellA, cellB, cellR].forEach(c => {
+      c.style.opacity = '0';
+      c.style.transform = 'scale(0.5)';
+      setTimeout(() => { c.style.opacity = '1'; c.style.transform = 'scale(1)'; }, i * 50);
+    });
+  }
+
+  hammingScore.textContent = `Hamming distance: ${dist} / ${HAMMING_LEN} bits differ`;
+  hammingScore.style.color = dist < 4 ? '#6ee7b7' : dist < 8 ? '#fbbf24' : '#f87171';
+}
+
+randomizeHamming();
+
+// ===== PolarQuant Visualization =====
+const polarPairs = document.getElementById('polar-pairs');
+const polarAngles = document.getElementById('polar-angles');
+const polarRadii = document.getElementById('polar-radii');
+const POLAR_DISPLAY = 12; // show 12 pairs
+
+// Generate pairs display
+let pairData = [];
+for (let i = 0; i < POLAR_DISPLAY; i++) {
+  const x = (Math.random() * 2 - 1).toFixed(1);
+  const y = (Math.random() * 2 - 1).toFixed(1);
+  pairData.push({x: parseFloat(x), y: parseFloat(y)});
+
+  const pair = document.createElement('span');
+  pair.style.cssText = 'display:inline-block; background:#1e293b; border:1px solid #334155; padding:4px 8px; border-radius:6px; font-size:0.8em; margin:2px; color:#aaa;';
+  pair.innerHTML = `(<span style="color:#7cb8ff">${x}</span>, <span style="color:#7cb8ff">${y}</span>)`;
+  polarPairs.appendChild(pair);
+}
+
+// Angles and radii
+for (let i = 0; i < POLAR_DISPLAY; i++) {
+  const angle = Math.floor(Math.random() * 16);
+  const radius = Math.floor(Math.random() * 256);
+
+  const aCell = document.createElement('div');
+  aCell.className = 'vector-cell angle';
+  aCell.textContent = angle;
+  polarAngles.appendChild(aCell);
+
+  const rCell = document.createElement('div');
+  rCell.className = 'vector-cell radius';
+  rCell.textContent = radius;
+  polarRadii.appendChild(rCell);
+}
+
+// Add "..." to both
+for (const el of [polarAngles, polarRadii]) {
+  const dots = document.createElement('div');
+  dots.className = 'vector-cell';
+  dots.style.cssText = 'background:transparent; border:none; color:#555; font-size:0.9em;';
+  dots.textContent = '...';
+  el.appendChild(dots);
+}
+
+// Rotated vector display
+const polarRotated = document.getElementById('polar-rotated');
+for (let i = 0; i < 24; i++) {
+  const cell = document.createElement('div');
+  cell.className = 'vector-cell float';
+  cell.textContent = (Math.random() * 2 - 1).toFixed(1);
+  polarRotated.appendChild(cell);
+}
+const dots2 = document.createElement('div');
+dots2.className = 'vector-cell';
+dots2.style.cssText = 'background:transparent; border:none; color:#555; font-size:0.9em;';
+dots2.textContent = '...';
+polarRotated.appendChild(dots2);
+
+// ===== Polar Canvas (2D scatter with quantization grid) =====
+const canvas = document.getElementById('polar-canvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const cx = W / 2, cy = H / 2;
+const scale = 100;
+
+function drawPolarCanvas() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Draw quantization grid (angle lines)
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(a) * scale * 1.3, cy + Math.sin(a) * scale * 1.3);
+    ctx.stroke();
+  }
+
+  // Radius circles
+  for (let r = 0.25; r <= 1.25; r += 0.25) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+  }
+
+  // Axes
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+
+  // Axis labels
+  ctx.fillStyle = '#555';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('x', W - 16, cy - 6);
+  ctx.fillText('y', cx + 6, 14);
+
+  // Plot points with animation
+  const points = [];
+  for (let i = 0; i < 30; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 0.3 + Math.random() * 0.9;
+    points.push({x: Math.cos(a) * r, y: Math.sin(a) * r, a, r});
+  }
+
+  points.forEach((p, i) => {
+    setTimeout(() => {
+      // Line from origin to point
+      ctx.strokeStyle = '#3b82f620';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + p.x * scale, cy - p.y * scale);
+      ctx.stroke();
+
+      // Point
+      ctx.beginPath();
+      ctx.arc(cx + p.x * scale, cy - p.y * scale, 4, 0, Math.PI * 2);
+      ctx.fillStyle = `hsl(${(p.a / (Math.PI * 2)) * 360}, 70%, 60%)`;
+      ctx.fill();
+
+      // Angle arc for first few points
+      if (i < 5) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 20 + i * 6, 0, -p.a, true);
+        ctx.strokeStyle = `hsla(${(p.a / (Math.PI * 2)) * 360}, 70%, 60%, 0.4)`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }, i * 40);
+  });
+}
+
+drawPolarCanvas();
+
+// ===== Scroll-triggered fade-in =====
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) e.target.classList.add('visible');
+  });
+}, { threshold: 0.15 });
+
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+// ===== Search pipeline animation =====
+function animatePipeline() {
+  const counts = [
+    { el: 'qjl-count', from: 10000, to: 10000, delay: 0 },
+    { el: 'polar-count', from: 10000, to: 200, delay: 800 },
+    { el: 'result-count', from: 200, to: 10, delay: 1600 },
+  ];
+
+  counts.forEach(({el, from, to, delay}) => {
+    const elem = document.getElementById(el);
+    setTimeout(() => {
+      let current = from;
+      const step = Math.max(1, Math.floor((from - to) / 30));
+      const interval = setInterval(() => {
+        current -= step;
+        if (current <= to) { current = to; clearInterval(interval); }
+        elem.textContent = current.toLocaleString();
+      }, 30);
+    }, delay);
+  });
+}
+
+// Trigger pipeline animation when visible
+const pipelineObserver = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      animatePipeline();
+      pipelineObserver.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.5 });
+
+pipelineObserver.observe(document.getElementById('search-pipeline'));
+</script>
+
+</body>
+</html>
