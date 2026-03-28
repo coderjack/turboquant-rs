@@ -2,7 +2,7 @@
 
 Fast vector compression and semantic memory for AI agents.
 
-TurboQuant compresses high-dimensional embedding vectors to 1-4 bits per dimension, enabling semantic search over thousands of documents with minimal memory. Built for AI coding agents that need to recall prior context across sessions.
+TurboQuant-RS implements the TurboQuant family of algorithms for compressing high-dimensional embedding vectors to 1-4 bits per dimension, enabling semantic search over thousands of documents with minimal memory. Built for AI coding agents that need to recall prior context across sessions.
 
 ## How It Works
 
@@ -17,7 +17,7 @@ TurboQuant compresses high-dimensional embedding vectors to 1-4 bits per dimensi
 ```
 turboquant-rs/
   crates/
-    turboquant/       Core compression: QJL (1-bit) + PolarQuant (4-bit) + two-stage search
+    turboquant/       Core: QJL (1-bit) + TurboQuant_mse (2-4 bit) + two-stage search
     agent-memory/     Session context ranking + persistent cross-session semantic recall
     memory-mcp/       MCP server: 4 tools for AI agent integration
     codesearch-mcp/   Semantic code search (scaffolded, not yet implemented)
@@ -35,18 +35,34 @@ Compresses each vector to **1 bit per dimension** (32x compression vs float32).
 2. Project the vector: `y = R @ x`
 3. Keep only the sign bits: `b = sign(y)`
 
-Vectors that are similar in the original space will share most sign bits, so **Hamming distance between bit vectors approximates cosine distance**. Used as a fast pre-filter.
+Vectors that are similar in the original space will share most sign bits, so **Hamming distance between bit vectors approximates cosine distance**. Used as a fast pre-filter in the first search stage.
 
-### PolarQuant - 4-bit angles + 8-bit radii
+> Zandieh, A., Daliri, M., & Han, I. (2024). *QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead.* [arXiv:2406.03482](https://arxiv.org/abs/2406.03482)
 
-Compresses each vector to **~0.75 bytes per dimension** (4x compression).
+### TurboQuant_mse - Optimal Scalar Quantization (2-4 bit)
 
-1. Apply a random orthogonal rotation (Gram-Schmidt, deterministic from seed)
-2. Pair adjacent dimensions into 2D coordinates
-3. Convert each pair to polar form: `(x, y) -> (r, theta)`
-4. Quantize angles to 4 bits (16 levels) and radii to 8 bits (256 levels)
+Compresses each vector to **b bits per dimension** with provably near-optimal MSE distortion (within 2.7x of the information-theoretic lower bound).
 
-Reconstructed similarity uses: `sum_i(r_a * r_b * cos(theta_a - theta_b))`, which closely approximates the true dot product. Used for accurate re-ranking.
+1. Normalize the vector and store its L2 norm separately
+2. Multiply by a random orthogonal matrix Q (Gram-Schmidt on Gaussian, deterministic from seed)
+3. After rotation, each coordinate follows ≈ N(0, 1/d) — quantize independently with a precomputed [Lloyd-Max codebook](https://en.wikipedia.org/wiki/Lloyd%27s_algorithm)
+4. Pack b-bit indices into bytes
+
+**Key insight for search:** Since Q is orthogonal, `<x, y> = <Qx, Qy>`. Similarity is computed directly in the rotated domain using codebook lookups — no matrix multiply during search.
+
+| Bits | Centroids | Storage (384-dim) | MSE bound |
+|------|-----------|-------------------|-----------|
+| 2 | 4 | 100 bytes | ≤ 0.117 |
+| 3 | 8 | 148 bytes | ≤ 0.038 |
+| 4 | 16 | 196 bytes | ≤ 0.009 |
+
+> Zandieh, A., Daliri, M., Hadian, M., & Mirrokni, V. (2025). *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate.* [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
+
+### PolarQuant (also included)
+
+Available as an alternative compressor. Pairs adjacent dimensions into 2D polar coordinates, quantizes angles (4-bit) and radii (8-bit). Not used in the default search pipeline but kept for comparison.
+
+> Han, I., Kacham, P., Karbasi, A., Mirrokni, V., & Zandieh, A. (2025). *PolarQuant.* [arXiv:2502.02617](https://arxiv.org/abs/2502.02617)
 
 ### Two-Stage Search
 
@@ -54,13 +70,13 @@ Reconstructed similarity uses: `sum_i(r_a * r_b * cos(theta_a - theta_b))`, whic
 Query vector
     |
     v
-[QJL compress] -> Hamming scan over all vectors -> top-K candidates (fast, approximate)
+[QJL 1-bit] --> Hamming scan over all vectors --> top-K candidates  (fast, approximate)
     |
     v
-[PolarQuant re-rank] -> accurate similarity on K candidates -> final top-k results
+[TurboQuant_mse 3-bit] --> codebook similarity on K candidates --> final top-k results
 ```
 
-This gives near-exact recall at a fraction of the cost of brute-force search.
+QJL eliminates ~98% of candidates with a single XOR + popcount per vector. TurboQuant_mse re-ranks only the survivors with near-optimal accuracy.
 
 ## Crates
 
@@ -72,7 +88,8 @@ Core compression library with no runtime dependencies beyond ndarray.
 use turboquant::{TurboIndex, SearchResult};
 
 // Create an index (stored on disk via mmap)
-let mut index = TurboIndex::create("./my_index", 384, /*qjl_seed=*/42, /*polar_seed=*/99)?;
+// Default: QJL 1-bit pre-filter + TurboQuant_mse 3-bit re-ranking
+let mut index = TurboIndex::create("./my_index", 384, /*qjl_seed=*/42, /*tqmse_seed=*/99)?;
 
 // Insert vectors (e.g., from an embedding model)
 index.insert(1, &embedding_vec)?;
@@ -89,7 +106,9 @@ index.delete(1)?;
 index.compact()?;  // rebuild without deleted vectors
 ```
 
-**Storage format:** Memory-mapped files with 16-byte headers. QJL vectors (`*.tqjl`) and PolarQuant vectors (`*.tqpl`) are stored separately for cache-friendly scanning.
+Use `TurboIndex::create_with_bits()` to choose 2-bit (smallest) or 4-bit (most accurate) re-ranking.
+
+**Storage format:** Memory-mapped files with 16-byte headers. QJL vectors (`*.qjl`) and TurboQuant_mse vectors (`*.tqsq`) are stored separately for cache-friendly scanning.
 
 ### `agent-memory`
 
@@ -237,26 +256,54 @@ memory_recall(query: "auth middleware JWT token validation")
 
 ## Compression Efficiency
 
-| Method | Bits/dim | Compression vs f32 | Use case |
-|--------|----------|-------------------|----------|
-| QJL | 1 | 32x | Fast pre-filtering |
-| PolarQuant (4-bit angle, 8-bit radius) | ~6 | ~5x | Accurate re-ranking |
-| Two-stage combined | - | - | Best of both: speed + accuracy |
+| Method | Bits/dim | Bytes/vec (384-dim) | Compression vs f32 | Use case |
+|--------|----------|--------------------|--------------------|----------|
+| QJL | 1 | 48 | 32x | Fast pre-filtering |
+| TurboQuant_mse 2-bit | 2 | 100 | 15x | Compact re-ranking |
+| TurboQuant_mse 3-bit | 3 | 148 | 10x | Default re-ranking |
+| TurboQuant_mse 4-bit | 4 | 196 | 8x | High-accuracy re-ranking |
+| PolarQuant | ~6 | 288 | 5x | Alternative (legacy) |
 
-For a 384-dim embedding model (MiniLM):
-- Raw: 1,536 bytes per vector
-- QJL: 48 bytes per vector
-- PolarQuant: 576 bytes per vector
-- 10,000 documents: ~6MB total index (vs ~15MB raw)
+For 10,000 documents at 384 dimensions:
+- Raw float32: 15.0 MB
+- QJL + TurboQuant_mse 3-bit: **1.9 MB** (7.9x total compression)
+- QJL + PolarQuant: 3.3 MB
 
 ## Running Tests
 
 ```bash
-# All tests (52 total)
+# All tests (65 total)
 cargo test --workspace
 
 # With real ONNX model (requires export_onnx.py first)
 cargo test -p agent-memory test_onnx_embedder_real_model
+```
+
+## Citations
+
+This project implements algorithms from the following papers:
+
+```bibtex
+@article{zandieh2025turboquant,
+  title={TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate},
+  author={Zandieh, Amir and Daliri, Majid and Hadian, Majid and Mirrokni, Vahab},
+  journal={arXiv preprint arXiv:2504.19874},
+  year={2025}
+}
+
+@article{zandieh2024qjl,
+  title={QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead},
+  author={Zandieh, Amir and Daliri, Majid and Han, Insu},
+  journal={arXiv preprint arXiv:2406.03482},
+  year={2024}
+}
+
+@article{han2025polarquant,
+  title={PolarQuant},
+  author={Han, Insu and Kacham, Praneeth and Karbasi, Amin and Mirrokni, Vahab and Zandieh, Amir},
+  journal={arXiv preprint arXiv:2502.02617},
+  year={2025}
+}
 ```
 
 ## License

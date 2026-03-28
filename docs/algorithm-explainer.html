@@ -57,7 +57,7 @@
   .pipeline-arrow { font-size: 1.4em; color: #3b82f6; padding: 0 4px; }
   .box-query { background: #1e293b; border: 1px solid #334155; }
   .box-qjl { background: #1a2e1a; border: 1px solid #2d6a4f; }
-  .box-polar { background: #2e1a2e; border: 1px solid #6b2158; }
+  .box-polar { background: #1e3050; border: 1px solid #3b82f6; }
   .box-result { background: #1e3a5f; border: 1px solid #2a5a8f; }
 
   /* Hamming animation */
@@ -140,56 +140,48 @@
   </div>
 </div>
 
-<!-- ==================== POLARQUANT SECTION ==================== -->
-<div class="section" id="polar-section">
-  <h2>Step 2: PolarQuant <span class="tag tag-purple">4-bit angles + 8-bit radii</span></h2>
-  <p class="subtitle">Polar coordinate compression &mdash; more bits, more accuracy</p>
+<!-- ==================== TURBOQUANT_MSE SECTION ==================== -->
+<div class="section" id="tqmse-section">
+  <h2>Step 2: TurboQuant_mse <span class="tag tag-blue">3 bits/dim</span></h2>
+  <p class="subtitle">Optimal scalar quantization &mdash; provably near-optimal MSE distortion</p>
 
   <div class="stage-container fade-in">
-    <div style="text-align:center; margin-bottom: 16px; font-weight: 600; color: #7cb8ff;">How PolarQuant works</div>
+    <div style="text-align:center; margin-bottom: 16px; font-weight: 600; color: #60a5fa;">How TurboQuant_mse works</div>
 
-    <div id="polar-steps">
-      <div class="polar-step" data-step="0">
-        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">1. Rotate the vector</div>
-        <div class="step-label">Apply a random orthogonal rotation (preserves distances, decorrelates dimensions)</div>
-        <div class="vector-row" id="polar-rotated"></div>
+    <div>
+      <div>
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">1. Normalize &amp; rotate the vector</div>
+        <div class="step-label">Store the L2 norm separately, then multiply by a random orthogonal matrix Q (seeded)</div>
+        <div class="step-label">After rotation, each coordinate &asymp; N(0, 1/d) &mdash; nearly independent in high dimensions</div>
+        <div class="vector-row" id="tqmse-rotated"></div>
       </div>
 
       <div class="arrow-down">&darr;</div>
 
-      <div class="polar-step" data-step="1">
-        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">2. Pair adjacent dimensions</div>
-        <div class="step-label">Group into 192 pairs: (d0,d1), (d2,d3), (d4,d5) ...</div>
-        <div style="display: flex; justify-content: center; gap: 8px; margin: 16px 0; flex-wrap: wrap;">
-          <div id="polar-pairs"></div>
+      <div>
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">2. Quantize each coordinate with a Lloyd-Max codebook</div>
+        <div class="step-label">For 3-bit: 8 precomputed optimal centroids for N(0, 1/&radic;d). Each coordinate snaps to its nearest centroid.</div>
+        <canvas id="tqmse-canvas" width="700" height="120" style="display:block; margin: 16px auto; border-radius: 12px; background: #0d0d15;"></canvas>
+        <div style="text-align:center; font-size: 0.85em; color: #888;">Number line showing 8 centroids (dots). Values snap to the nearest centroid.</div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div>
+        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">3. Pack 3-bit indices</div>
+        <div style="display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; margin: 16px 0;">
+          <div class="vector-row" id="tqmse-indices"></div>
         </div>
+        <div class="step-label">384 &times; 3 bits = 144 bytes + 4 bytes norm = <strong>148 bytes per vector</strong> (10x smaller than float32!)</div>
       </div>
+    </div>
 
-      <div class="arrow-down">&darr;</div>
+    <div class="note" style="margin-top: 16px;">
+      <strong>Why is this near-optimal?</strong> The rotation makes coordinates nearly independent and Gaussian. The Lloyd-Max quantizer is optimal for a known distribution. MSE distortion &le; 2.7&times; the information-theoretic lower bound (Theorem 1, <a href="https://arxiv.org/abs/2504.19874" style="color: #3b82f6; text-decoration: none;">Zandieh et al. 2025</a>).
+    </div>
 
-      <div class="polar-step" data-step="2">
-        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">3. Convert each pair to polar coordinates</div>
-        <div class="step-label">(x, y) &rarr; (r, &theta;) where r = sqrt(x&sup2;+y&sup2;), &theta; = atan2(y, x)</div>
-        <canvas id="polar-canvas" width="280" height="280" style="display:block; margin: 16px auto; border-radius: 12px; background: #0d0d15;"></canvas>
-        <div style="text-align:center; font-size: 0.85em; color: #888;">Each dot is one (x,y) pair plotted in 2D. The grid shows quantization bins.</div>
-      </div>
-
-      <div class="arrow-down">&darr;</div>
-
-      <div class="polar-step" data-step="3">
-        <div style="text-align:center; margin-bottom: 8px; color: #aaa; font-weight: 600;">4. Quantize</div>
-        <div style="display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; margin: 16px 0;">
-          <div style="text-align: center;">
-            <div style="color: #e879a8; font-weight: 600; margin-bottom: 8px;">Angles (4-bit = 16 levels)</div>
-            <div class="vector-row" id="polar-angles"></div>
-          </div>
-          <div style="text-align: center;">
-            <div style="color: #f0a860; font-weight: 600; margin-bottom: 8px;">Radii (8-bit = 256 levels)</div>
-            <div class="vector-row" id="polar-radii"></div>
-          </div>
-        </div>
-        <div class="step-label">192 angle nibbles (96 bytes) + 192 radii bytes = 288 bytes per vector</div>
-      </div>
+    <div class="note">
+      <strong>Search trick:</strong> Since Q is orthogonal, &langle;x, y&rangle; = &langle;Qx, Qy&rangle;. Similarity is computed directly from codebook centroids &mdash; no matrix multiply at search time, just table lookups.
     </div>
   </div>
 </div>
@@ -197,7 +189,7 @@
 <!-- ==================== TWO-STAGE SEARCH ==================== -->
 <div class="section" id="search-section">
   <h2>Two-Stage Search <span class="tag tag-blue">Speed + Accuracy</span></h2>
-  <p class="subtitle">QJL narrows the field, PolarQuant picks the winners</p>
+  <p class="subtitle">QJL narrows the field, TurboQuant_mse picks the winners</p>
 
   <div class="stage-container fade-in">
     <div class="search-pipeline" id="search-pipeline">
@@ -213,7 +205,7 @@
       <div class="pipeline-arrow">&rarr;</div>
       <div class="pipeline-box box-polar" id="pipe-polar">
         <div class="count" id="polar-count">200</div>
-        <div class="label">PolarQuant re-rank</div>
+        <div class="label">TurboQuant_mse re-rank</div>
       </div>
       <div class="pipeline-arrow">&rarr;</div>
       <div class="pipeline-box box-result" id="pipe-result">
@@ -223,7 +215,7 @@
     </div>
 
     <div class="note" style="margin-top: 24px;">
-      <strong>Why two stages?</strong> QJL is extremely fast (XOR + popcount on packed bits) but approximate. PolarQuant is more accurate but slower. By using QJL to eliminate 98% of candidates first, we only run the expensive PolarQuant comparison on a small set &mdash; getting the best of both worlds.
+      <strong>Why two stages?</strong> QJL is extremely fast (XOR + popcount on packed bits) but approximate. TurboQuant_mse is more accurate but slower. By using QJL to eliminate 98% of candidates first, we only run the expensive TurboQuant_mse comparison on a small set &mdash; getting the best of both worlds.
     </div>
   </div>
 
@@ -246,10 +238,10 @@
         </div>
       </div>
       <div class="size-card">
-        <div class="size-value" style="color: #a78bfa;">2.9 MB</div>
-        <div class="size-label">PolarQuant</div>
+        <div class="size-value" style="color: #60a5fa;">1.4 MB</div>
+        <div class="size-label">TurboQuant_mse 3-bit</div>
         <div style="margin-top: 8px;">
-          <div class="compare-bar" style="width: 18.75%; min-width: 80px; background: #2a1a3a; color: #a78bfa;">288 bytes/vec</div>
+          <div class="compare-bar" style="width: 9.6%; min-width: 80px; background: #1e3050; color: #60a5fa;">148 bytes/vec</div>
         </div>
       </div>
     </div>
@@ -271,7 +263,7 @@
         <div style="color: #3b82f6; font-size: 1.2em;">&rarr;</div>
         <div style="background: #16362b; padding: 12px 16px; border-radius: 8px; flex: 1; min-width: 200px;">
           <div style="font-weight: 600; color: #6ee7b7; font-size: 0.85em;">STORE</div>
-          <div style="color: #aaa; font-size: 0.85em; margin-top: 4px;">QJL bits + PolarQuant vectors on disk (mmap)</div>
+          <div style="color: #aaa; font-size: 0.85em; margin-top: 4px;">QJL bits + TurboQuant_mse vectors on disk (mmap)</div>
         </div>
         <div style="color: #3b82f6; font-size: 1.2em;">&rarr;</div>
         <div style="background: #2e1a3e; padding: 12px 16px; border-radius: 8px; flex: 1; min-width: 200px;">
@@ -287,7 +279,17 @@
   </div>
 </div>
 
-<div style="text-align: center; padding: 40px; color: #444; font-size: 0.85em;">
+<div style="max-width: 900px; margin: 0 auto; padding: 20px 24px 60px;">
+  <div style="background: #12121a; border: 1px solid #222; border-radius: 12px; padding: 20px;">
+    <div style="font-weight: 600; color: #888; margin-bottom: 8px; font-size: 0.9em;">Citations</div>
+    <div style="font-size: 0.8em; color: #666; line-height: 1.6;">
+      Zandieh, A., Daliri, M., Hadian, M., &amp; Mirrokni, V. (2025). <em>TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate.</em> <a href="https://arxiv.org/abs/2504.19874" style="color: #3b82f6; text-decoration: none;">arXiv:2504.19874</a><br>
+      Zandieh, A., Daliri, M., &amp; Han, I. (2024). <em>QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead.</em> <a href="https://arxiv.org/abs/2406.03482" style="color: #3b82f6; text-decoration: none;">arXiv:2406.03482</a><br>
+      Han, I., Kacham, P., Karbasi, A., Mirrokni, V., &amp; Zandieh, A. (2025). <em>PolarQuant.</em> <a href="https://arxiv.org/abs/2502.02617" style="color: #3b82f6; text-decoration: none;">arXiv:2502.02617</a>
+    </div>
+  </div>
+</div>
+<div style="text-align: center; padding: 20px 0 40px; color: #444; font-size: 0.85em;">
   TurboQuant-RS &mdash; <a href="https://github.com/coderjack/turboquant-rs" style="color: #3b82f6; text-decoration: none;">github.com/coderjack/turboquant-rs</a>
 </div>
 
@@ -383,143 +385,143 @@ function renderHamming() {
 
 randomizeHamming();
 
-// ===== PolarQuant Visualization =====
-const polarPairs = document.getElementById('polar-pairs');
-const polarAngles = document.getElementById('polar-angles');
-const polarRadii = document.getElementById('polar-radii');
-const POLAR_DISPLAY = 12; // show 12 pairs
+// ===== TurboQuant_mse Visualization =====
 
-// Generate pairs display
-let pairData = [];
-for (let i = 0; i < POLAR_DISPLAY; i++) {
-  const x = (Math.random() * 2 - 1).toFixed(1);
-  const y = (Math.random() * 2 - 1).toFixed(1);
-  pairData.push({x: parseFloat(x), y: parseFloat(y)});
-
-  const pair = document.createElement('span');
-  pair.style.cssText = 'display:inline-block; background:#1e293b; border:1px solid #334155; padding:4px 8px; border-radius:6px; font-size:0.8em; margin:2px; color:#aaa;';
-  pair.innerHTML = `(<span style="color:#7cb8ff">${x}</span>, <span style="color:#7cb8ff">${y}</span>)`;
-  polarPairs.appendChild(pair);
-}
-
-// Angles and radii
-for (let i = 0; i < POLAR_DISPLAY; i++) {
-  const angle = Math.floor(Math.random() * 16);
-  const radius = Math.floor(Math.random() * 256);
-
-  const aCell = document.createElement('div');
-  aCell.className = 'vector-cell angle';
-  aCell.textContent = angle;
-  polarAngles.appendChild(aCell);
-
-  const rCell = document.createElement('div');
-  rCell.className = 'vector-cell radius';
-  rCell.textContent = radius;
-  polarRadii.appendChild(rCell);
-}
-
-// Add "..." to both
-for (const el of [polarAngles, polarRadii]) {
-  const dots = document.createElement('div');
-  dots.className = 'vector-cell';
-  dots.style.cssText = 'background:transparent; border:none; color:#555; font-size:0.9em;';
-  dots.textContent = '...';
-  el.appendChild(dots);
-}
-
-// Rotated vector display
-const polarRotated = document.getElementById('polar-rotated');
-for (let i = 0; i < 24; i++) {
+// Rotated vector display (small values ~N(0, 1/sqrt(384)))
+const tqmseRotated = document.getElementById('tqmse-rotated');
+const scale384 = 1 / Math.sqrt(384);
+for (let i = 0; i < 20; i++) {
+  const val = ((Math.random() * 2 - 1) * scale384 * 3).toFixed(3);
   const cell = document.createElement('div');
   cell.className = 'vector-cell float';
-  cell.textContent = (Math.random() * 2 - 1).toFixed(1);
-  polarRotated.appendChild(cell);
+  cell.textContent = val;
+  tqmseRotated.appendChild(cell);
 }
 const dots2 = document.createElement('div');
 dots2.className = 'vector-cell';
 dots2.style.cssText = 'background:transparent; border:none; color:#555; font-size:0.9em;';
 dots2.textContent = '...';
-polarRotated.appendChild(dots2);
+tqmseRotated.appendChild(dots2);
 
-// ===== Polar Canvas (2D scatter with quantization grid) =====
-const canvas = document.getElementById('polar-canvas');
+// 3-bit index display
+const tqmseIndices = document.getElementById('tqmse-indices');
+for (let i = 0; i < 20; i++) {
+  const idx = Math.floor(Math.random() * 8);
+  const cell = document.createElement('div');
+  cell.className = 'vector-cell';
+  cell.style.cssText = 'background:#1e3050; color:#60a5fa; border:1px solid #3b82f6; width:28px; height:28px; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:0.7em; font-weight:600;';
+  cell.textContent = idx;
+  tqmseIndices.appendChild(cell);
+}
+const dots3 = document.createElement('div');
+dots3.className = 'vector-cell';
+dots3.style.cssText = 'background:transparent; border:none; color:#555; font-size:0.9em;';
+dots3.textContent = '...';
+tqmseIndices.appendChild(dots3);
+
+// ===== TurboQuant_mse Canvas (number line with centroids) =====
+const canvas = document.getElementById('tqmse-canvas');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
-const cx = W / 2, cy = H / 2;
-const scale = 100;
 
-function drawPolarCanvas() {
+function drawTqMseCanvas() {
   ctx.clearRect(0, 0, W, H);
 
-  // Draw quantization grid (angle lines)
-  ctx.strokeStyle = '#222';
-  ctx.lineWidth = 0.5;
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + Math.cos(a) * scale * 1.3, cy + Math.sin(a) * scale * 1.3);
-    ctx.stroke();
-  }
+  // Centroids for N(0,1) Lloyd-Max b=3
+  const centroids = [-2.152, -1.344, -0.756, -0.245, 0.245, 0.756, 1.344, 2.152];
+  const colors = ['#f87171', '#fb923c', '#fbbf24', '#a3e635', '#34d399', '#38bdf8', '#818cf8', '#c084fc'];
 
-  // Radius circles
-  for (let r = 0.25; r <= 1.25; r += 0.25) {
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
-    ctx.strokeStyle = '#1a1a2e';
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
-  }
+  // Map value to x coordinate
+  const xMin = -3, xMax = 3;
+  const mapX = v => 50 + (v - xMin) / (xMax - xMin) * (W - 100);
 
-  // Axes
-  ctx.strokeStyle = '#333';
+  // Number line
+  ctx.strokeStyle = '#444';
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(mapX(xMin), 50);
+  ctx.lineTo(mapX(xMax), 50);
+  ctx.stroke();
 
-  // Axis labels
+  // Tick marks
   ctx.fillStyle = '#555';
-  ctx.font = '11px Inter, sans-serif';
-  ctx.fillText('x', W - 16, cy - 6);
-  ctx.fillText('y', cx + 6, 14);
-
-  // Plot points with animation
-  const points = [];
-  for (let i = 0; i < 30; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 0.3 + Math.random() * 0.9;
-    points.push({x: Math.cos(a) * r, y: Math.sin(a) * r, a, r});
+  ctx.font = '10px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  for (let v = -3; v <= 3; v++) {
+    const x = mapX(v);
+    ctx.beginPath(); ctx.moveTo(x, 46); ctx.lineTo(x, 54); ctx.stroke();
+    ctx.fillText(v.toString(), x, 68);
   }
 
-  points.forEach((p, i) => {
+  // Voronoi boundaries (midpoints between adjacent centroids)
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#333';
+  for (let i = 0; i < centroids.length - 1; i++) {
+    const mid = (centroids[i] + centroids[i + 1]) / 2;
+    const x = mapX(mid);
+    ctx.beginPath(); ctx.moveTo(x, 25); ctx.lineTo(x, 55); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Centroids as colored dots
+  centroids.forEach((c, i) => {
+    const x = mapX(c);
+    ctx.beginPath();
+    ctx.arc(x, 50, 6, 0, Math.PI * 2);
+    ctx.fillStyle = colors[i];
+    ctx.fill();
+
+    // Index label
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 8px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(i.toString(), x, 53);
+  });
+
+  // Scatter some sample values and show them snapping to centroids
+  const samples = [];
+  for (let i = 0; i < 15; i++) {
+    // Box-Muller for normal distribution
+    const u1 = Math.random(), u2 = Math.random();
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    samples.push(z);
+  }
+
+  samples.forEach((val, i) => {
     setTimeout(() => {
-      // Line from origin to point
-      ctx.strokeStyle = '#3b82f620';
+      const x = mapX(val);
+      // Find nearest centroid
+      let bestIdx = 0, bestDist = Infinity;
+      centroids.forEach((c, ci) => {
+        const d = Math.abs(val - c);
+        if (d < bestDist) { bestDist = d; bestIdx = ci; }
+      });
+      const cx = mapX(centroids[bestIdx]);
+
+      // Draw snap line
+      ctx.strokeStyle = colors[bestIdx] + '40';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + p.x * scale, cy - p.y * scale);
+      ctx.moveTo(x, 35);
+      ctx.lineTo(cx, 50);
       ctx.stroke();
 
-      // Point
+      // Sample point
       ctx.beginPath();
-      ctx.arc(cx + p.x * scale, cy - p.y * scale, 4, 0, Math.PI * 2);
-      ctx.fillStyle = `hsl(${(p.a / (Math.PI * 2)) * 360}, 70%, 60%)`;
+      ctx.arc(x, 35, 3, 0, Math.PI * 2);
+      ctx.fillStyle = colors[bestIdx];
       ctx.fill();
-
-      // Angle arc for first few points
-      if (i < 5) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, 20 + i * 6, 0, -p.a, true);
-        ctx.strokeStyle = `hsla(${(p.a / (Math.PI * 2)) * 360}, 70%, 60%, 0.4)`;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-    }, i * 40);
+    }, i * 80);
   });
+
+  // Label
+  ctx.fillStyle = '#666';
+  ctx.font = '10px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('scaled by 1/√d for actual use', W / 2, 100);
 }
 
-drawPolarCanvas();
+drawTqMseCanvas();
 
 // ===== Scroll-triggered fade-in =====
 const observer = new IntersectionObserver((entries) => {
