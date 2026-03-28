@@ -1,4 +1,7 @@
 // TurboIndex: append, delete, compact, two-stage search
+//
+// Stage 1: QJL (1-bit) Hamming pre-filter
+// Stage 2: TurboQuant_mse (b-bit scalar quantization) re-ranking
 
 use std::collections::HashSet;
 use std::fs;
@@ -7,11 +10,11 @@ use std::path::{Path, PathBuf};
 use ndarray::Array2;
 
 use crate::compression::{
-    polarquant::PolarQuantCompressor,
     qjl::QjlCompressor,
+    turboquant_mse::TqMseCompressor,
 };
 use crate::search::{two_stage_search, SearchResult};
-use crate::storage::{MmapBitVectors, MmapPolarVectors};
+use crate::storage::{MmapBitVectors, MmapTqMseVectors};
 use crate::TurboError;
 
 const DEFAULT_PRE_FILTER_K: usize = 50;
@@ -21,27 +24,33 @@ const DEFAULT_PRE_FILTER_K: usize = 50;
 struct IndexMeta {
     dim: usize,
     qjl_seed: u64,
-    polar_seed: u64,
-    angle_bits: u8,
-    radius_bits: u8,
+    tqmse_seed: u64,
+    tqmse_bits: u8,
     ids: Vec<u64>,
     deleted: Vec<u64>,
     next_id: u64,
+    /// Version tag for forward compatibility.
+    #[serde(default = "default_version")]
+    version: u8,
 }
 
-/// TurboIndex: two-stage vector search with QJL + PolarQuant.
+fn default_version() -> u8 {
+    2
+}
+
+/// TurboIndex: two-stage vector search with QJL + TurboQuant_mse.
 pub struct TurboIndex {
     qjl: QjlCompressor,
-    polar: PolarQuantCompressor,
+    tqmse: TqMseCompressor,
     qjl_storage: MmapBitVectors,
-    polar_storage: MmapPolarVectors,
+    tqmse_storage: MmapTqMseVectors,
     ids: Vec<u64>,
     deleted: HashSet<u64>,
     next_id: u64,
     path: PathBuf,
     dim: usize,
     qjl_seed: u64,
-    polar_seed: u64,
+    tqmse_seed: u64,
 }
 
 impl TurboIndex {
@@ -49,8 +58,8 @@ impl TurboIndex {
         base.join("index.qjl")
     }
 
-    fn polar_path(base: &Path) -> PathBuf {
-        base.join("index.polar")
+    fn tqmse_path(base: &Path) -> PathBuf {
+        base.join("index.tqsq")
     }
 
     fn meta_path(base: &Path) -> PathBuf {
@@ -58,27 +67,47 @@ impl TurboIndex {
     }
 
     /// Create a new index at the given directory path.
-    pub fn create(path: &Path, dim: usize, qjl_seed: u64, polar_seed: u64) -> Result<Self, TurboError> {
+    ///
+    /// `tqmse_bits` controls the re-ranking precision (2, 3, or 4).
+    /// Default is 3 (144 bytes/vector for 384-dim, MSE ≤ 0.03).
+    pub fn create(
+        path: &Path,
+        dim: usize,
+        qjl_seed: u64,
+        tqmse_seed: u64,
+    ) -> Result<Self, TurboError> {
+        Self::create_with_bits(path, dim, qjl_seed, tqmse_seed, 3)
+    }
+
+    /// Create a new index with explicit bit-width for re-ranking.
+    pub fn create_with_bits(
+        path: &Path,
+        dim: usize,
+        qjl_seed: u64,
+        tqmse_seed: u64,
+        tqmse_bits: u8,
+    ) -> Result<Self, TurboError> {
         fs::create_dir_all(path)?;
 
         let qjl = QjlCompressor::new(dim, qjl_seed);
-        let polar = PolarQuantCompressor::new(dim, polar_seed, 4, 8);
+        let tqmse = TqMseCompressor::new(dim, tqmse_seed, tqmse_bits);
 
         let qjl_storage = MmapBitVectors::create(&Self::qjl_path(path), dim)?;
-        let polar_storage = MmapPolarVectors::create(&Self::polar_path(path), dim, 4)?;
+        let tqmse_storage =
+            MmapTqMseVectors::create(&Self::tqmse_path(path), dim, tqmse_bits)?;
 
         let index = Self {
             qjl,
-            polar,
+            tqmse,
             qjl_storage,
-            polar_storage,
+            tqmse_storage,
             ids: Vec::new(),
             deleted: HashSet::new(),
             next_id: 0,
             path: path.to_path_buf(),
             dim,
             qjl_seed,
-            polar_seed,
+            tqmse_seed,
         };
 
         index.save_meta()?;
@@ -92,23 +121,23 @@ impl TurboIndex {
             .map_err(|e| TurboError::Storage(format!("failed to deserialize meta: {e}")))?;
 
         let qjl = QjlCompressor::new(meta.dim, meta.qjl_seed);
-        let polar = PolarQuantCompressor::new(meta.dim, meta.polar_seed, meta.angle_bits, meta.radius_bits);
+        let tqmse = TqMseCompressor::new(meta.dim, meta.tqmse_seed, meta.tqmse_bits);
 
         let qjl_storage = MmapBitVectors::open(&Self::qjl_path(path))?;
-        let polar_storage = MmapPolarVectors::open(&Self::polar_path(path))?;
+        let tqmse_storage = MmapTqMseVectors::open(&Self::tqmse_path(path))?;
 
         Ok(Self {
             qjl,
-            polar,
+            tqmse,
             qjl_storage,
-            polar_storage,
+            tqmse_storage,
             ids: meta.ids,
             deleted: meta.deleted.into_iter().collect(),
             next_id: meta.next_id,
             path: path.to_path_buf(),
             dim: meta.dim,
             qjl_seed: meta.qjl_seed,
-            polar_seed: meta.polar_seed,
+            tqmse_seed: meta.tqmse_seed,
         })
     }
 
@@ -116,12 +145,12 @@ impl TurboIndex {
         let meta = IndexMeta {
             dim: self.dim,
             qjl_seed: self.qjl_seed,
-            polar_seed: self.polar_seed,
-            angle_bits: self.polar.angle_bits(),
-            radius_bits: self.polar.radius_bits(),
+            tqmse_seed: self.tqmse_seed,
+            tqmse_bits: self.tqmse.bits(),
             ids: self.ids.clone(),
             deleted: self.deleted.iter().copied().collect(),
             next_id: self.next_id,
+            version: 2,
         };
         let bytes = bincode::serialize(&meta)
             .map_err(|e| TurboError::Storage(format!("failed to serialize meta: {e}")))?;
@@ -139,10 +168,10 @@ impl TurboIndex {
         }
 
         let bv = self.qjl.compress(vector);
-        let pv = self.polar.compress(vector);
+        let tv = self.tqmse.compress(vector);
 
         self.qjl_storage.append(&bv)?;
-        self.polar_storage.append(&pv)?;
+        self.tqmse_storage.append(&tv)?;
         self.ids.push(id);
 
         if id >= self.next_id {
@@ -169,9 +198,9 @@ impl TurboIndex {
 
         let bvs = self.qjl.compress_batch(vectors);
         for (i, bv) in bvs.into_iter().enumerate() {
-            let pv = self.polar.compress(vectors.row(i).as_slice().unwrap());
+            let tv = self.tqmse.compress(vectors.row(i).as_slice().unwrap());
             self.qjl_storage.append(&bv)?;
-            self.polar_storage.append(&pv)?;
+            self.tqmse_storage.append(&tv)?;
             self.ids.push(ids[i]);
 
             if ids[i] >= self.next_id {
@@ -199,16 +228,15 @@ impl TurboIndex {
             return vec![];
         }
 
-        // Build in-memory index excluding deleted vectors
         let all_qjl = self.qjl_storage.get_all();
         let mut live_qjl = Vec::new();
-        let mut live_polar = Vec::new();
+        let mut live_tqmse_indices = Vec::new();
         let mut live_ids = Vec::new();
 
         for (i, id) in self.ids.iter().enumerate() {
             if !self.deleted.contains(id) {
                 live_qjl.push(all_qjl[i].clone());
-                live_polar.push(self.polar_storage.get(i));
+                live_tqmse_indices.push(i);
                 live_ids.push(*id);
             }
         }
@@ -218,19 +246,18 @@ impl TurboIndex {
         }
 
         let query_qjl = self.qjl.compress(query);
-        let query_polar = self.polar.compress(query);
-
         let pre_filter_k = DEFAULT_PRE_FILTER_K.min(live_ids.len());
 
         two_stage_search(
             &query_qjl,
-            &query_polar,
+            query,
             &live_qjl,
-            &live_polar,
+            &live_tqmse_indices,
             &live_ids,
             top_k,
             pre_filter_k,
-            &self.polar,
+            &self.tqmse,
+            &self.tqmse_storage,
         )
     }
 
@@ -243,36 +270,34 @@ impl TurboIndex {
         let all_qjl = self.qjl_storage.get_all();
         let old_ids = self.ids.clone();
 
-        // Collect live vectors
         let mut live_qjl = Vec::new();
-        let mut live_polar = Vec::new();
+        let mut live_tqmse = Vec::new();
         let mut live_ids = Vec::new();
 
         for (i, id) in old_ids.iter().enumerate() {
             if !self.deleted.contains(id) {
                 live_qjl.push(all_qjl[i].clone());
-                live_polar.push(self.polar_storage.get(i));
+                live_tqmse.push(self.tqmse_storage.get(i));
                 live_ids.push(*id);
             }
         }
 
-        // Recreate storage files
         let mut new_qjl = MmapBitVectors::create(&Self::qjl_path(&self.path), self.dim)?;
-        let mut new_polar = MmapPolarVectors::create(
-            &Self::polar_path(&self.path),
+        let mut new_tqmse = MmapTqMseVectors::create(
+            &Self::tqmse_path(&self.path),
             self.dim,
-            self.polar.angle_bits(),
+            self.tqmse.bits(),
         )?;
 
         for bv in &live_qjl {
             new_qjl.append(bv)?;
         }
-        for pv in &live_polar {
-            new_polar.append(pv)?;
+        for tv in &live_tqmse {
+            new_tqmse.append(tv)?;
         }
 
         self.qjl_storage = new_qjl;
-        self.polar_storage = new_polar;
+        self.tqmse_storage = new_tqmse;
         self.ids = live_ids;
         self.deleted.clear();
 
@@ -317,7 +342,6 @@ mod tests {
 
         let results = index.search(&unit_vec(dim, 0), 2);
         assert!(!results.is_empty());
-        // The closest should be id=1 (same vector)
         assert_eq!(results[0].id, 1, "expected id=1 got id={}", results[0].id);
     }
 
@@ -337,17 +361,14 @@ mod tests {
         index.delete(2).unwrap();
         assert_eq!(index.len(), 2);
 
-        // Search should not return deleted vector
         let results = index.search(&unit_vec(dim, 1), 3);
         for r in &results {
             assert_ne!(r.id, 2, "deleted vector should not appear in results");
         }
 
-        // Compact
         index.compact().unwrap();
         assert_eq!(index.len(), 2);
 
-        // Re-open and verify
         let reopened = TurboIndex::open(&path).unwrap();
         assert_eq!(reopened.len(), 2);
     }
@@ -382,9 +403,9 @@ mod tests {
 
         let ids = vec![100, 200, 300];
         let mut data = vec![0.0f32; 3 * dim];
-        data[0] = 1.0;           // vec 0: unit along dim 0
-        data[dim + 1] = 1.0;     // vec 1: unit along dim 1
-        data[2 * dim + 2] = 1.0; // vec 2: unit along dim 2
+        data[0] = 1.0;
+        data[dim + 1] = 1.0;
+        data[2 * dim + 2] = 1.0;
         let mat = Array2::from_shape_vec((3, dim), data).unwrap();
 
         index.insert_batch(&ids, &mat).unwrap();
@@ -410,7 +431,7 @@ mod tests {
         let path = dir.path().join("idx");
 
         let mut index = TurboIndex::create(&path, 16, 1, 2).unwrap();
-        let result = index.insert(1, &[1.0, 2.0]); // wrong dim
+        let result = index.insert(1, &[1.0, 2.0]);
         assert!(result.is_err());
     }
 }

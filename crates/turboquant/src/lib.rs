@@ -20,6 +20,7 @@ pub enum TurboError {
 pub use compression::hamming::{hamming_distance, hamming_top_k};
 pub use compression::polarquant::{PolarQuantCompressor, PolarVector};
 pub use compression::qjl::{BitVector, QjlCompressor};
+pub use compression::turboquant_mse::{TqMseCompressor, TqMseVector};
 pub use index::TurboIndex;
 pub use search::{two_stage_search, SearchResult};
-pub use storage::{MmapBitVectors, MmapPolarVectors};
+pub use storage::{MmapBitVectors, MmapPolarVectors, MmapTqMseVectors};

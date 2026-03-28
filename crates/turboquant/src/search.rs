@@ -1,10 +1,11 @@
-// Two-stage search: QJL Hamming pre-filter -> PolarQuant re-rank
+// Two-stage search: QJL Hamming pre-filter -> TurboQuant_mse re-rank
 
 use crate::compression::{
     hamming,
-    polarquant::{PolarQuantCompressor, PolarVector},
+    turboquant_mse::TqMseCompressor,
     qjl::BitVector,
 };
+use crate::storage::MmapTqMseVectors;
 
 /// A search result with ID, score, and raw Hamming distance.
 #[derive(Debug, Clone)]
@@ -14,21 +15,22 @@ pub struct SearchResult {
     pub distance: u32,
 }
 
-/// Two-stage search: QJL pre-filter -> PolarQuant re-rank.
+/// Two-stage search: QJL pre-filter -> TurboQuant_mse re-rank.
 ///
 /// 1. Compute Hamming distances from `query_qjl` against all `index_qjl` vectors.
 /// 2. Take top `pre_filter_k` candidates.
-/// 3. Re-rank those candidates using PolarQuant similarity.
+/// 3. Re-rank those candidates using TqMse similarity (raw query vs compressed).
 /// 4. Return top `top_k` results sorted by descending score.
 pub fn two_stage_search(
     query_qjl: &BitVector,
-    query_polar: &PolarVector,
+    query_raw: &[f32],
     index_qjl: &[BitVector],
-    index_polar: &[PolarVector],
+    tqmse_indices: &[usize],
     ids: &[u64],
     top_k: usize,
     pre_filter_k: usize,
-    polar_compressor: &PolarQuantCompressor,
+    tqmse: &TqMseCompressor,
+    tqmse_storage: &MmapTqMseVectors,
 ) -> Vec<SearchResult> {
     if index_qjl.is_empty() {
         return vec![];
@@ -38,11 +40,13 @@ pub fn two_stage_search(
     let effective_pre_k = pre_filter_k.min(index_qjl.len());
     let candidates = hamming::hamming_top_k(query_qjl, index_qjl, effective_pre_k);
 
-    // Stage 2: PolarQuant re-rank
+    // Stage 2: TurboQuant_mse re-rank using full-precision query
     let mut results: Vec<SearchResult> = candidates
         .iter()
         .map(|&(idx, dist)| {
-            let score = polar_compressor.similarity(query_polar, &index_polar[idx]);
+            let storage_idx = tqmse_indices[idx];
+            let tv = tqmse_storage.get(storage_idx);
+            let score = tqmse.similarity_raw(query_raw, &tv);
             SearchResult {
                 id: ids[idx],
                 score,
@@ -61,15 +65,14 @@ pub fn two_stage_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compression::{polarquant::PolarQuantCompressor, qjl::QjlCompressor};
+    use crate::compression::{turboquant_mse::TqMseCompressor, qjl::QjlCompressor};
 
     #[test]
     fn test_two_stage_search_basic() {
         let dim = 32;
         let qjl = QjlCompressor::new(dim, 42);
-        let polar = PolarQuantCompressor::new(dim, 99, 4, 8);
+        let tqmse = TqMseCompressor::new(dim, 99, 3);
 
-        // Create some vectors
         let mut vectors = Vec::new();
         let mut ids = Vec::new();
 
@@ -94,25 +97,31 @@ mod tests {
         ids.push(102);
 
         let index_qjl: Vec<BitVector> = vectors.iter().map(|v| qjl.compress(v)).collect();
-        let index_polar: Vec<PolarVector> = vectors.iter().map(|v| polar.compress(v)).collect();
 
-        // Query = v0
+        // Write TqMse vectors to temp storage
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.tqsq");
+        let mut storage = crate::storage::MmapTqMseVectors::create(&path, dim, 3).unwrap();
+        for v in &vectors {
+            storage.append(&tqmse.compress(v)).unwrap();
+        }
+
         let query_qjl = qjl.compress(&vectors[0]);
-        let query_polar = polar.compress(&vectors[0]);
+        let tqmse_indices: Vec<usize> = (0..3).collect();
 
         let results = two_stage_search(
             &query_qjl,
-            &query_polar,
+            &vectors[0],
             &index_qjl,
-            &index_polar,
+            &tqmse_indices,
             &ids,
             2,
             3,
-            &polar,
+            &tqmse,
+            &storage,
         );
 
         assert_eq!(results.len(), 2);
-        // The top result should be v0 itself (id=100) or v1 (id=101)
         assert!(
             results[0].id == 100 || results[0].id == 101,
             "top result id = {}",
@@ -123,21 +132,26 @@ mod tests {
     #[test]
     fn test_empty_index() {
         let dim = 16;
-        let polar = PolarQuantCompressor::new(dim, 1, 4, 8);
-        let qjl = crate::compression::qjl::QjlCompressor::new(dim, 1);
+        let tqmse = TqMseCompressor::new(dim, 1, 3);
+        let qjl = QjlCompressor::new(dim, 1);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.tqsq");
+        let storage = crate::storage::MmapTqMseVectors::create(&path, dim, 3).unwrap();
 
         let mut v = vec![0.0f32; dim];
         v[0] = 1.0;
 
         let results = two_stage_search(
             &qjl.compress(&v),
-            &polar.compress(&v),
+            &v,
             &[],
             &[],
             &[],
             5,
             10,
-            &polar,
+            &tqmse,
+            &storage,
         );
         assert!(results.is_empty());
     }

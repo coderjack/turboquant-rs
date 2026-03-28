@@ -1,6 +1,6 @@
 // Memory-mapped binary file management for packed vectors
 
-use crate::compression::{polarquant::PolarVector, qjl::BitVector};
+use crate::compression::{polarquant::PolarVector, qjl::BitVector, turboquant_mse::TqMseVector};
 use crate::TurboError;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -321,6 +321,147 @@ impl MmapPolarVectors {
     }
 }
 
+// ---------------------------------------------------------------------------
+// MmapTqMseVectors -- file-based storage for TurboQuant_mse vectors
+// ---------------------------------------------------------------------------
+
+/// File-based storage for TurboQuant_mse scalar-quantized vectors.
+///
+/// File layout:
+///   [IndexHeader: 16 bytes]
+///   [dim: u32 LE, 4 bytes]
+///   [bits: u8, 1 byte]
+///   [vector data: N * bytes_per_vector]
+///
+/// Each vector is serialized as: [norm: f32 LE, 4 bytes] [packed indices: ceil(dim*bits/8) bytes]
+pub struct MmapTqMseVectors {
+    file: File,
+    path: PathBuf,
+    header: IndexHeader,
+    dim: usize,
+    bits: u8,
+}
+
+impl MmapTqMseVectors {
+    fn compute_bpv(dim: usize, bits: u8) -> u32 {
+        (4 + TqMseVector::index_bytes(dim, bits)) as u32
+    }
+
+    pub fn create(path: &Path, dim: usize, bits: u8) -> Result<Self, TurboError> {
+        let bytes_per_vector = Self::compute_bpv(dim, bits);
+        let header = IndexHeader {
+            magic: *b"TQSQ",
+            version: 1,
+            num_vectors: 0,
+            bytes_per_vector,
+        };
+
+        let mut file = File::create(path)?;
+        file.write_all(&header.to_bytes())?;
+        file.write_all(&(dim as u32).to_le_bytes())?;
+        file.write_all(&[bits])?;
+        file.flush()?;
+
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+            header,
+            dim,
+            bits,
+        })
+    }
+
+    pub fn open(path: &Path) -> Result<Self, TurboError> {
+        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        let mut buf = [0u8; HEADER_SIZE];
+        file.read_exact(&mut buf)?;
+        let header = IndexHeader::from_bytes(&buf);
+
+        if &header.magic != b"TQSQ" {
+            return Err(TurboError::Storage("invalid magic for TqMse file".into()));
+        }
+
+        let mut dim_buf = [0u8; 4];
+        file.read_exact(&mut dim_buf)?;
+        let dim = u32::from_le_bytes(dim_buf) as usize;
+
+        let mut bits_buf = [0u8; 1];
+        file.read_exact(&mut bits_buf)?;
+        let bits = bits_buf[0];
+
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+            header,
+            dim,
+            bits,
+        })
+    }
+
+    fn data_offset(&self) -> usize {
+        HEADER_SIZE + 5 // 4 bytes dim + 1 byte bits
+    }
+
+    fn serialize_tv(tv: &TqMseVector) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + tv.data.len());
+        buf.extend_from_slice(&tv.norm.to_le_bytes());
+        buf.extend_from_slice(&tv.data);
+        buf
+    }
+
+    fn deserialize_tv(&self, data: &[u8]) -> TqMseVector {
+        let norm = f32::from_le_bytes(data[0..4].try_into().unwrap());
+        let index_data = data[4..].to_vec();
+        TqMseVector {
+            data: index_data,
+            norm,
+            dim: self.dim,
+            bits: self.bits,
+        }
+    }
+
+    pub fn append(&mut self, tv: &TqMseVector) -> Result<(), TurboError> {
+        let data = Self::serialize_tv(tv);
+        let expected = self.header.bytes_per_vector as usize;
+        if data.len() != expected {
+            return Err(TurboError::DimensionMismatch {
+                expected,
+                got: data.len(),
+            });
+        }
+
+        self.file.seek(SeekFrom::End(0))?;
+        self.file.write_all(&data)?;
+
+        self.header.num_vectors += 1;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&self.header.to_bytes())?;
+        self.file.flush()?;
+
+        Ok(())
+    }
+
+    pub fn get(&self, idx: usize) -> TqMseVector {
+        let bpv = self.header.bytes_per_vector as usize;
+        let offset = self.data_offset() + idx * bpv;
+
+        let mut file = File::open(&self.path).expect("failed to open file for reading");
+        file.seek(SeekFrom::Start(offset as u64)).unwrap();
+        let mut buf = vec![0u8; bpv];
+        file.read_exact(&mut buf).unwrap();
+
+        self.deserialize_tv(&buf)
+    }
+
+    pub fn len(&self) -> usize {
+        self.header.num_vectors as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.header.num_vectors == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +523,36 @@ mod tests {
             assert_eq!(loaded.angles, pv.angles);
             assert_eq!(loaded.radii, pv.radii);
             assert_eq!(loaded.dim, pv.dim);
+        }
+    }
+
+    #[test]
+    fn test_tqmse_storage_roundtrip() {
+        use crate::compression::turboquant_mse::TqMseCompressor;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.tqsq");
+        let dim = 32;
+
+        let comp = TqMseCompressor::new(dim, 42, 3);
+        let mut v = vec![0.0f32; dim];
+        v[0] = 1.0;
+        let tv = comp.compress(&v);
+
+        {
+            let mut storage = MmapTqMseVectors::create(&path, dim, 3).unwrap();
+            storage.append(&tv).unwrap();
+            assert_eq!(storage.len(), 1);
+        }
+
+        {
+            let storage = MmapTqMseVectors::open(&path).unwrap();
+            assert_eq!(storage.len(), 1);
+            let loaded = storage.get(0);
+            assert_eq!(loaded.data, tv.data);
+            assert_eq!(loaded.norm, tv.norm);
+            assert_eq!(loaded.dim, tv.dim);
+            assert_eq!(loaded.bits, tv.bits);
         }
     }
 }
