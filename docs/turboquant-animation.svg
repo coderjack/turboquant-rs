@@ -19,8 +19,8 @@
   <rect x="30" y="100" width="740" height="3" rx="1.5" fill="#2d6a4f"/>
 
   <text x="60" y="132" fill="#6ee7b7" font-size="16" font-weight="700">Stage 1: QJL — Fast Pre-Filter</text>
-  <rect x="280" y="118" width="70" height="20" rx="10" fill="#16362b"/>
-  <text x="315" y="132" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="600">1 bit/dim</text>
+  <rect x="420" y="118" width="70" height="20" rx="10" fill="#16362b"/>
+  <text x="455" y="132" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="600">1 bit/dim</text>
 
   <!-- Original vector -->
   <text x="400" y="162" text-anchor="middle" fill="#7cb8ff" font-size="12" font-weight="600">Original Vector (384 floats = 1,536 bytes)</text>
@@ -140,8 +140,8 @@
   <rect x="30" y="540" width="740" height="3" rx="1.5" fill="#3b82f6"/>
 
   <text x="60" y="572" fill="#60a5fa" font-size="16" font-weight="700">Stage 2: TurboQuant_mse — Accurate Re-Ranking</text>
-  <rect x="368" y="558" width="60" height="20" rx="10" fill="#1e3050"/>
-  <text x="398" y="572" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">3 bit/dim</text>
+  <rect x="560" y="558" width="60" height="20" rx="10" fill="#1e3050"/>
+  <text x="590" y="572" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">3 bit/dim</text>
 
   <!-- Step 1: Normalize + Rotate -->
   <g opacity="0"><animate attributeName="opacity" from="0" to="1" dur="0.5s" begin="2.8s" fill="freeze"/>
