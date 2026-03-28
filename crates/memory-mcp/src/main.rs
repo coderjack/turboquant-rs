@@ -21,8 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("memory-mcp server starting");
 
-    // Create server state with MockEmbedder (real ONNX model not yet available).
-    let state = Arc::new(ServerState::with_mock_embedder());
+    // Auto-detect ONNX model, fall back to MockEmbedder.
+    let state = Arc::new(ServerState::auto());
     let server = MemoryServer::new(state);
 
     // Serve over stdio (MCP standard transport).

@@ -1,8 +1,5 @@
 /target
-models/bge-code-v1/*.onnx
-models/bge-code-v1/*.json
-models/minilm/*.onnx
-models/minilm/*.json
+/models/
 *.swp
 *.swo
 .DS_Store

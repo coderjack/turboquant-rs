@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
-use agent_memory::embedder::{Embedder, MockEmbedder};
+use agent_memory::embedder::{Embedder, MockEmbedder, OnnxEmbedder};
 use agent_memory::persistent::PersistentMemory;
 use agent_memory::AgentMemoryError;
 
@@ -26,6 +26,70 @@ impl ServerState {
     /// Create a ServerState with the default MockEmbedder (dim=384).
     pub fn with_mock_embedder() -> Self {
         Self::new(Arc::new(MockEmbedder::new(384)))
+    }
+
+    /// Create a ServerState with auto-detected embedder.
+    ///
+    /// Looks for an ONNX model in this order:
+    /// 1. `MEMORY_MODEL_DIR` env var
+    /// 2. `<exe_dir>/../models/minilm/`
+    /// 3. `~/.cache/agent-memory/models/minilm/`
+    ///
+    /// Falls back to MockEmbedder if no model is found.
+    pub fn auto() -> Self {
+        match Self::try_load_onnx() {
+            Ok(embedder) => {
+                tracing::info!("Loaded ONNX embedder (dim={})", embedder.dim());
+                Self::new(Arc::new(embedder))
+            }
+            Err(reason) => {
+                tracing::warn!("ONNX model not available ({reason}), using MockEmbedder — semantic recall will be degraded");
+                Self::with_mock_embedder()
+            }
+        }
+    }
+
+    fn try_load_onnx() -> Result<OnnxEmbedder, String> {
+        let candidates: Vec<PathBuf> = [
+            // 1. Explicit env var
+            std::env::var("MEMORY_MODEL_DIR").ok().map(PathBuf::from),
+            // 2. Relative to binary: <exe>/../models/minilm
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("../models/minilm"))),
+            // 3. User cache directory
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".cache/agent-memory/models/minilm")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        for dir in &candidates {
+            let has_onnx = dir
+                .read_dir()
+                .ok()
+                .and_then(|mut d| {
+                    d.find(|e| {
+                        e.as_ref()
+                            .ok()
+                            .map_or(false, |e| e.path().extension().is_some_and(|ext| ext == "onnx"))
+                    })
+                })
+                .is_some();
+
+            if has_onnx {
+                tracing::info!("Found ONNX model at {}", dir.display());
+                return OnnxEmbedder::load(dir, 384)
+                    .map_err(|e| format!("failed to load {}: {e}", dir.display()));
+            }
+        }
+
+        Err(format!(
+            "no ONNX model found in any of: {}",
+            candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+        ))
     }
 
     /// Get or create a PersistentMemory for the given project directory.
