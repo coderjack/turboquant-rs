@@ -1,7 +1,7 @@
 pub mod compression;
 pub mod index;
-pub mod search;
 pub mod storage;
+pub mod turboquant;
 
 /// Error type for all TurboQuant operations.
 #[derive(thiserror::Error, Debug)]
@@ -17,9 +17,15 @@ pub enum TurboError {
 }
 
 // Re-export core types for convenience.
-pub use compression::hamming::{hamming_distance, hamming_top_k};
-pub use compression::polarquant::{PolarQuantCompressor, PolarVector};
+//
+// Primary API (Lloyd-Max based — default):
+pub use compression::lloyd_max::{LloydMaxQuantizer, ScalarQuantVector};
 pub use compression::qjl::{BitVector, QjlCompressor};
-pub use index::TurboIndex;
-pub use search::{two_stage_search, SearchResult};
-pub use storage::{MmapBitVectors, MmapPolarVectors};
+pub use compression::rotation::Rotation;
+pub use index::{SearchResult, TurboIndex};
+pub use storage::VectorStorage;
+pub use turboquant::{LloydMaxCompressor, LloydMaxVector, PreparedQuery};
+
+// PolarQuant variant (kept for benchmarking / backward compatibility):
+pub use compression::polarquant::{PolarQuantizer, PolarVector};
+pub use turboquant::{TurboQuantCompressor, TurboQuantVector};

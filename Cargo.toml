@@ -1,8 +1,9 @@
 [workspace]
 members = [
     "crates/turboquant",
-    "crates/agent-memory",
-    "crates/codesearch-mcp",
-    "crates/memory-mcp",
 ]
 resolver = "2"
+
+[workspace.package]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/coderjack/turboquant-rs"

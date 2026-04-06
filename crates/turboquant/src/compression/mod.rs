@@ -1,3 +1,4 @@
-pub mod qjl;
+pub mod rotation;
 pub mod polarquant;
-pub mod hamming;
+pub mod qjl;
+pub mod lloyd_max;

@@ -2,18 +2,26 @@
 name = "turboquant"
 version = "0.1.0"
 edition = "2021"
-description = "TurboQuant vector compression: QJL (1-bit) + PolarQuant (4-bit angles + 8-bit radii) with two-stage search"
+license.workspace = true
+repository.workspace = true
+description = "TurboQuant vector compression: rotation + PolarQuant + QJL residual correction"
 
 [dependencies]
 ndarray = "0.16"
 rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
-memmap2 = "0.9"
-bytemuck = { version = "1.14", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
 thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
+ort = "2.0.0-rc.12"
+tokenizers = "0.20"
+
+[[example]]
+name = "basic_index"
+
+[[example]]
+name = "semantic_search"

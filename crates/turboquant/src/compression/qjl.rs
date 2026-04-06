@@ -1,12 +1,19 @@
-// QJL (Quantized Johnson-Lindenstrauss) compression
-// Random projection + sign-bit extraction -> 1-bit per dimension
+// QJL (Quantized Johnson-Lindenstrauss) — Step 3 of TurboQuant
+//
+// Applied to the RESIDUAL error left over after PolarQuant.
+// Projects via a random Gaussian matrix, then extracts sign bits.
+// These 1-bit corrections eliminate bias in the inner product estimator,
+// making the combined TurboQuant similarity unbiased.
+//
+// The `project` method returns the full-precision projection (before sign
+// extraction) for use in the correction term during search.
 
 use ndarray::{Array1, Array2};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
 
-/// Packed bit vector -- ceil(dim/8) bytes.
+/// Packed sign-bit vector — ceil(dim/8) bytes.
 #[derive(Clone, Debug)]
 pub struct BitVector(pub Vec<u8>);
 
@@ -18,21 +25,23 @@ impl BitVector {
 }
 
 /// QJL compressor: random Gaussian projection + sign-bit extraction.
+///
+/// Projection matrix entries are drawn from N(0, 1/d), preserving
+/// inner products in expectation (Johnson-Lindenstrauss property).
 pub struct QjlCompressor {
-    projection_matrix: Array2<f32>, // R in R^(d x d), R[i,j] ~ N(0, 1/d)
+    projection_matrix: Array2<f32>,
     dim: usize,
 }
 
 impl QjlCompressor {
-    /// Create with deterministic seed. Generates d x d Gaussian random matrix.
+    /// Create with deterministic seed. Generates d×d Gaussian random matrix.
     pub fn new(dim: usize, seed: u64) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let normal = Normal::new(0.0, (1.0 / dim as f64).sqrt()).unwrap();
 
-        let mut data = Vec::with_capacity(dim * dim);
-        for _ in 0..(dim * dim) {
-            data.push(normal.sample(&mut rng) as f32);
-        }
+        let data: Vec<f32> = (0..dim * dim)
+            .map(|_| normal.sample(&mut rng) as f32)
+            .collect();
 
         let projection_matrix = Array2::from_shape_vec((dim, dim), data).unwrap();
 
@@ -52,8 +61,18 @@ impl QjlCompressor {
         (self.dim + 7) / 8
     }
 
-    /// Compress one vector: sign(R @ x) -> packed bits.
-    /// Positive -> 1, negative/zero -> 0.
+    /// Full-precision projection: S × x (no sign extraction).
+    ///
+    /// Used to project the query vector for the QJL correction term
+    /// during search: correction = ||r|| · √(π/(2d)) · Σ sign_i · (S·q)_i
+    pub fn project(&self, vector: &[f32]) -> Vec<f32> {
+        assert_eq!(vector.len(), self.dim, "vector length must match dim");
+        let x = Array1::from_vec(vector.to_vec());
+        self.projection_matrix.dot(&x).to_vec()
+    }
+
+    /// Compress one vector: sign(S × x) → packed bits.
+    /// Positive → 1, negative/zero → 0.
     pub fn compress(&self, vector: &[f32]) -> BitVector {
         assert_eq!(vector.len(), self.dim, "vector length must match dim");
 
@@ -71,36 +90,11 @@ impl QjlCompressor {
 
         BitVector(bits)
     }
-
-    /// Batch compress: each row of `vectors` is one vector.
-    pub fn compress_batch(&self, vectors: &Array2<f32>) -> Vec<BitVector> {
-        assert_eq!(vectors.ncols(), self.dim, "vector dim must match");
-
-        // Z = vectors @ R^T  (each row of Z is R @ x_i)
-        let z = vectors.dot(&self.projection_matrix.t());
-
-        let num_bytes = (self.dim + 7) / 8;
-        let n = vectors.nrows();
-        let mut result = Vec::with_capacity(n);
-
-        for row_idx in 0..n {
-            let mut bits = vec![0u8; num_bytes];
-            for (i, &val) in z.row(row_idx).iter().enumerate() {
-                if val > 0.0 {
-                    bits[i / 8] |= 1 << (i % 8);
-                }
-            }
-            result.push(BitVector(bits));
-        }
-
-        result
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array2;
 
     #[test]
     fn test_deterministic_seed() {
@@ -113,51 +107,40 @@ mod tests {
     fn test_compress_basic() {
         let dim = 32;
         let comp = QjlCompressor::new(dim, 123);
-        let v: Vec<f32> = (0..dim).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
+        let v: Vec<f32> = (0..dim)
+            .map(|i| if i == 0 { 1.0 } else { 0.0 })
+            .collect();
         let bv = comp.compress(&v);
         assert_eq!(bv.byte_len(), 4); // 32/8 = 4
     }
 
     #[test]
-    fn test_hamming_correlates_with_cosine() {
-        use crate::compression::hamming::hamming_distance;
-
+    fn test_project_preserves_inner_product() {
+        // JL property: E[<Sx, Sy>] = <x, y>
         let dim = 128;
-        let comp = QjlCompressor::new(dim, 99);
+        let comp = QjlCompressor::new(dim, 42);
 
-        // Two identical vectors should have Hamming distance 0
-        let v: Vec<f32> = {
-            let mut v = vec![0.0f32; dim];
-            v[0] = 1.0;
-            v
-        };
-        let bv1 = comp.compress(&v);
-        let bv2 = comp.compress(&v);
-        assert_eq!(hamming_distance(&bv1, &bv2), 0);
-
-        // Orthogonal vectors should have Hamming distance ~dim/2
+        let mut v1 = vec![0.0f32; dim];
+        v1[0] = 1.0;
         let mut v2 = vec![0.0f32; dim];
-        v2[1] = 1.0;
-        let bv3 = comp.compress(&v2);
-        let dist = hamming_distance(&bv1, &bv3);
-        // Expect roughly dim/2 = 64, allow wide margin for randomness
-        assert!(dist > 30 && dist < 100, "dist={dist} expected ~64");
+        v2[0] = 0.8;
+        v2[1] = 0.6;
+
+        let true_dot: f32 = v1.iter().zip(&v2).map(|(a, b)| a * b).sum();
+        let p1 = comp.project(&v1);
+        let p2 = comp.project(&v2);
+        let proj_dot: f32 = p1.iter().zip(&p2).map(|(a, b)| a * b).sum();
+
+        // Allow some variance — JL is approximate
+        assert!(
+            (proj_dot - true_dot).abs() < 0.5,
+            "projected dot = {proj_dot}, true dot = {true_dot}"
+        );
     }
 
     #[test]
-    fn test_batch_matches_single() {
-        let dim = 64;
-        let comp = QjlCompressor::new(dim, 77);
-
-        let mut rng = ChaCha8Rng::seed_from_u64(1);
-        let normal = Normal::new(0.0, 1.0).unwrap();
-        let data: Vec<f32> = (0..3 * dim).map(|_| normal.sample(&mut rng) as f32).collect();
-        let mat = Array2::from_shape_vec((3, dim), data).unwrap();
-
-        let batch = comp.compress_batch(&mat);
-        for i in 0..3 {
-            let single = comp.compress(mat.row(i).as_slice().unwrap());
-            assert_eq!(batch[i].0, single.0);
-        }
+    fn test_bytes_per_vector() {
+        let comp = QjlCompressor::new(384, 42);
+        assert_eq!(comp.bytes_per_vector(), 48); // 384/8 = 48
     }
 }

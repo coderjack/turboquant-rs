@@ -1,15 +1,16 @@
-// PolarQuant compression
-// Random orthogonal rotation -> polar coordinates -> grid quantization
+// PolarQuant — Step 2 of TurboQuant
+//
+// Converts pairs of rotated Cartesian coordinates to polar form (radius, angle),
+// then quantizes each independently. This eliminates the per-block overhead that
+// traditional quantizers carry.
+//
+// Input: a vector in the ROTATED domain (after Step 1 rotation).
+// Output: packed quantized angles + radii.
 
-use ndarray::{Array1, Array2};
-use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Normal};
-
-/// Quantized polar representation.
+/// Quantized polar representation of a rotated vector.
 #[derive(Clone, Debug)]
 pub struct PolarVector {
-    /// Packed angle nibbles (4-bit each when angle_bits=4, two per byte).
+    /// Packed angle data (nibbles if angle_bits=4, bytes otherwise).
     pub angles: Vec<u8>,
     /// 8-bit quantized radii, one per dimension pair.
     pub radii: Vec<u8>,
@@ -31,52 +32,59 @@ impl PolarVector {
     }
 }
 
-/// PolarQuant compressor: orthogonal rotation -> polar coords -> grid quantize.
-pub struct PolarQuantCompressor {
-    rotation_matrix: Array2<f32>,
+/// PolarQuant quantizer — operates on already-rotated vectors.
+///
+/// No rotation matrix is stored here; the caller (TurboQuantCompressor)
+/// handles rotation as a separate step.
+pub struct PolarQuantizer {
     angle_bits: u8,
     radius_bits: u8,
     dim: usize,
     max_radius: f32,
 }
 
-impl PolarQuantCompressor {
-    /// Create with deterministic seed. Generates orthogonal matrix via Gram-Schmidt.
-    pub fn new(dim: usize, seed: u64, angle_bits: u8, radius_bits: u8) -> Self {
-        let rotation_matrix = generate_orthogonal_matrix(dim, seed);
+impl PolarQuantizer {
+    /// Create a quantizer for the given dimension.
+    ///
+    /// `max_radius` is set automatically to cover ~4σ of the Rayleigh
+    /// distribution that pair-radii follow after rotation of a unit vector.
+    pub fn new(dim: usize, angle_bits: u8, radius_bits: u8) -> Self {
+        // After rotation of a unit vector, each coordinate ≈ N(0, 1/d).
+        // Pair radius follows Rayleigh(σ) with σ = 1/sqrt(d).
+        // 4σ covers >99.99% of the distribution.
+        let max_radius = 4.0 / (dim as f32).sqrt();
         Self {
-            rotation_matrix,
             angle_bits,
             radius_bits,
             dim,
-            max_radius: 0.5,
+            max_radius,
         }
     }
 
-    /// Return the dimensionality.
     pub fn dim(&self) -> usize {
         self.dim
     }
-
     pub fn angle_bits(&self) -> u8 {
         self.angle_bits
     }
-
     pub fn radius_bits(&self) -> u8 {
         self.radius_bits
     }
+    pub fn max_radius(&self) -> f32 {
+        self.max_radius
+    }
 
-    /// Bytes needed to store angles for one vector.
+    /// Bytes needed for the angle data of one vector.
     pub fn angle_bytes(&self) -> usize {
         let num_pairs = (self.dim + 1) / 2;
         if self.angle_bits == 4 {
             (num_pairs + 1) / 2 // two nibbles per byte
         } else {
-            num_pairs // 8-bit angles, one per byte
+            num_pairs // one byte per angle
         }
     }
 
-    /// Bytes needed to store radii for one vector.
+    /// Bytes needed for the radii data of one vector.
     pub fn radii_bytes(&self) -> usize {
         (self.dim + 1) / 2
     }
@@ -86,12 +94,9 @@ impl PolarQuantCompressor {
         self.angle_bytes() + self.radii_bytes()
     }
 
-    /// Compress: rotate -> pair dims -> polar -> quantize.
-    pub fn compress(&self, vector: &[f32]) -> PolarVector {
-        assert_eq!(vector.len(), self.dim, "vector length must match dim");
-
-        let x = Array1::from_vec(vector.to_vec());
-        let y = self.rotation_matrix.dot(&x);
+    /// Compress a rotated vector into polar coordinates.
+    pub fn compress(&self, rotated: &[f32]) -> PolarVector {
+        assert_eq!(rotated.len(), self.dim);
 
         let num_pairs = (self.dim + 1) / 2;
         let angle_levels = 1u32 << self.angle_bits;
@@ -101,24 +106,29 @@ impl PolarQuantCompressor {
         let mut radii = Vec::with_capacity(num_pairs);
 
         for i in 0..num_pairs {
-            let y0 = y[2 * i];
-            let y1 = if 2 * i + 1 < self.dim { y[2 * i + 1] } else { 0.0 };
+            let y0 = rotated[2 * i];
+            let y1 = if 2 * i + 1 < self.dim {
+                rotated[2 * i + 1]
+            } else {
+                0.0
+            };
 
             let r = (y0 * y0 + y1 * y1).sqrt();
-            let theta = y1.atan2(y0); // in [-pi, pi]
+            let theta = y1.atan2(y0); // in [-π, π]
 
-            // Quantize angle: map [-pi, pi] to [0, 2^b)
-            let theta_norm = (theta + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
-            let theta_q = ((theta_norm * angle_levels as f32).round() as u32) % angle_levels;
+            // Quantize angle: map [-π, π] → [0, 2^b)
+            let theta_norm =
+                (theta + std::f32::consts::PI) / (2.0 * std::f32::consts::PI);
+            let theta_q =
+                ((theta_norm * angle_levels as f32).round() as u32) % angle_levels;
             raw_angles.push(theta_q as u8);
 
-            // Quantize radius
+            // Quantize radius: map [0, max_radius] → [0, 2^b - 1]
             let r_norm = (r / self.max_radius).clamp(0.0, 1.0);
             let r_q = (r_norm * radius_levels as f32).round() as u8;
             radii.push(r_q);
         }
 
-        // Pack angles as nibbles if angle_bits == 4
         let angles = if self.angle_bits == 4 {
             pack_nibbles(&raw_angles)
         } else {
@@ -133,7 +143,7 @@ impl PolarQuantCompressor {
         }
     }
 
-    /// Decompress: reconstruct approximate vector from quantized polar.
+    /// Decompress to rotated-domain Cartesian coordinates.
     pub fn decompress(&self, pv: &PolarVector) -> Vec<f32> {
         assert_eq!(pv.dim, self.dim);
 
@@ -148,17 +158,12 @@ impl PolarQuantCompressor {
         };
 
         let mut y = vec![0.0f32; self.dim];
-
         for i in 0..num_pairs {
-            let theta_q = raw_angles[i] as u32;
-            let r_q = pv.radii[i];
-
-            // Dequantize angle
-            let theta = (theta_q as f32 / angle_levels as f32) * 2.0 * std::f32::consts::PI
+            let theta = (raw_angles[i] as f32 / angle_levels as f32)
+                * 2.0
+                * std::f32::consts::PI
                 - std::f32::consts::PI;
-
-            // Dequantize radius
-            let r = (r_q as f32 / radius_levels as f32) * self.max_radius;
+            let r = (pv.radii[i] as f32 / radius_levels as f32) * self.max_radius;
 
             y[2 * i] = r * theta.cos();
             if 2 * i + 1 < self.dim {
@@ -166,14 +171,24 @@ impl PolarQuantCompressor {
             }
         }
 
-        // Inverse rotation: x_approx = Q^T @ y
-        let y_arr = Array1::from_vec(y);
-        let x_approx = self.rotation_matrix.t().dot(&y_arr);
-        x_approx.to_vec()
+        y
     }
 
-    /// Compute similarity between two PolarVectors (approximate dot product).
-    /// Uses: sim = sum_i r_a_i * r_b_i * cos(theta_a_i - theta_b_i)
+    /// Dot product between a raw rotated query and a compressed vector.
+    ///
+    /// Decompresses the polar vector to rotated-domain Cartesian
+    /// and computes the dot product. O(d).
+    pub fn similarity_raw(&self, rotated_query: &[f32], compressed: &PolarVector) -> f32 {
+        let y_hat = self.decompress(compressed);
+        rotated_query
+            .iter()
+            .zip(&y_hat)
+            .map(|(a, b)| a * b)
+            .sum()
+    }
+
+    /// Dot product between two compressed vectors using the polar identity:
+    /// sim = Σ r_a · r_b · cos(θ_a − θ_b)
     pub fn similarity(&self, a: &PolarVector, b: &PolarVector) -> f32 {
         assert_eq!(a.dim, b.dim);
         assert_eq!(a.dim, self.dim);
@@ -194,14 +209,15 @@ impl PolarQuantCompressor {
         };
 
         let mut sim = 0.0f32;
-
         for i in 0..num_pairs {
             let r_a = (a.radii[i] as f32 / radius_levels as f32) * self.max_radius;
             let r_b = (b.radii[i] as f32 / radius_levels as f32) * self.max_radius;
-
-            let theta_a = (a_angles[i] as f32 / angle_levels as f32) * 2.0 * std::f32::consts::PI;
-            let theta_b = (b_angles[i] as f32 / angle_levels as f32) * 2.0 * std::f32::consts::PI;
-
+            let theta_a = (a_angles[i] as f32 / angle_levels as f32)
+                * 2.0
+                * std::f32::consts::PI;
+            let theta_b = (b_angles[i] as f32 / angle_levels as f32)
+                * 2.0
+                * std::f32::consts::PI;
             sim += r_a * r_b * (theta_a - theta_b).cos();
         }
 
@@ -209,39 +225,9 @@ impl PolarQuantCompressor {
     }
 }
 
-/// Generate an orthogonal matrix via Gram-Schmidt on random Gaussian columns.
-fn generate_orthogonal_matrix(dim: usize, seed: u64) -> Array2<f32> {
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let normal = Normal::new(0.0, 1.0f64).unwrap();
-
-    // Generate random Gaussian matrix
-    let data: Vec<f32> = (0..dim * dim)
-        .map(|_| normal.sample(&mut rng) as f32)
-        .collect();
-    let mut q = Array2::from_shape_vec((dim, dim), data).unwrap();
-
-    // Modified Gram-Schmidt orthogonalization (column-wise)
-    for i in 0..dim {
-        // Normalize column i
-        let norm: f32 = q.column(i).dot(&q.column(i)).sqrt();
-        if norm > 1e-10 {
-            let inv_norm = 1.0 / norm;
-            for r in 0..dim {
-                q[[r, i]] *= inv_norm;
-            }
-        }
-
-        // Subtract projection of column i from all subsequent columns
-        for j in (i + 1)..dim {
-            let proj: f32 = q.column(i).dot(&q.column(j));
-            for r in 0..dim {
-                q[[r, j]] -= proj * q[[r, i]];
-            }
-        }
-    }
-
-    q
-}
+// ---------------------------------------------------------------------------
+// Nibble packing utilities
+// ---------------------------------------------------------------------------
 
 /// Pack an array of nibbles (values 0..15) into bytes, two per byte.
 fn pack_nibbles(values: &[u8]) -> Vec<u8> {
@@ -277,25 +263,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_orthogonal_matrix() {
-        let dim = 16;
-        let q = generate_orthogonal_matrix(dim, 42);
-
-        // Q^T @ Q should be close to identity
-        let qtq = q.t().dot(&q);
-        for i in 0..dim {
-            for j in 0..dim {
-                let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (qtq[[i, j]] - expected).abs() < 1e-4,
-                    "Q^T Q[{i},{j}] = {} (expected {expected})",
-                    qtq[[i, j]]
-                );
-            }
-        }
-    }
-
-    #[test]
     fn test_pack_unpack_nibbles() {
         let values = vec![3, 12, 7, 15, 0];
         let packed = pack_nibbles(&values);
@@ -306,79 +273,73 @@ mod tests {
     #[test]
     fn test_compress_decompress_roundtrip() {
         let dim = 32;
-        let comp = PolarQuantCompressor::new(dim, 42, 4, 8);
+        let pq = PolarQuantizer::new(dim, 4, 8);
 
-        // Create a unit vector
-        let mut v = vec![0.0f32; dim];
-        v[0] = 1.0;
+        // Simulate a rotated unit vector (small values ≈ N(0, 1/d))
+        let scale = 1.0 / (dim as f32).sqrt();
+        let rotated: Vec<f32> = (0..dim)
+            .map(|i| ((i as f32 * 0.7).sin()) * scale)
+            .collect();
 
-        let pv = comp.compress(&v);
-        let reconstructed = comp.decompress(&pv);
+        let pv = pq.compress(&rotated);
+        let reconstructed = pq.decompress(&pv);
 
-        // Compute cosine similarity between original and reconstructed
-        let dot: f32 = v.iter().zip(reconstructed.iter()).map(|(a, b)| a * b).sum();
-        let norm_r: f32 = reconstructed.iter().map(|x| x * x).sum::<f32>().sqrt();
+        // Compute MSE
+        let mse: f32 = rotated
+            .iter()
+            .zip(&reconstructed)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            / dim as f32;
 
-        // Should be reasonably close for a unit vector
-        let cosine = if norm_r > 0.0 { dot / norm_r } else { 0.0 };
         assert!(
-            cosine > 0.5,
-            "roundtrip cosine similarity = {cosine}, expected > 0.5"
+            mse < 1e-3,
+            "roundtrip MSE = {mse}, expected < 1e-3 for well-scaled input"
         );
     }
 
     #[test]
     fn test_similarity_self() {
         let dim = 64;
-        let comp = PolarQuantCompressor::new(dim, 99, 4, 8);
+        let pq = PolarQuantizer::new(dim, 4, 8);
 
-        let mut v = vec![0.0f32; dim];
-        v[0] = 1.0;
+        let scale = 1.0 / (dim as f32).sqrt();
+        let rotated: Vec<f32> = (0..dim).map(|i| ((i as f32) * 0.3).cos() * scale).collect();
 
-        let pv = comp.compress(&v);
-        let self_sim = comp.similarity(&pv, &pv);
-
-        // Self-similarity should be positive
+        let pv = pq.compress(&rotated);
+        let self_sim = pq.similarity(&pv, &pv);
         assert!(self_sim > 0.0, "self similarity = {self_sim}");
     }
 
     #[test]
-    fn test_similarity_ordering() {
-        let dim = 64;
-        let comp = PolarQuantCompressor::new(dim, 55, 4, 8);
+    fn test_similarity_raw_matches_decompress() {
+        let dim = 32;
+        let pq = PolarQuantizer::new(dim, 4, 8);
 
-        // v1 = [1, 0, 0, ...]
-        let mut v1 = vec![0.0f32; dim];
-        v1[0] = 1.0;
+        let scale = 1.0 / (dim as f32).sqrt();
+        let rotated: Vec<f32> = (0..dim).map(|i| ((i as f32) * 0.5).sin() * scale).collect();
+        let query: Vec<f32> = (0..dim).map(|i| ((i as f32) * 0.3).cos() * scale).collect();
 
-        // v2 is close to v1
-        let mut v2 = vec![0.0f32; dim];
-        let norm = (0.9f32 * 0.9 + 0.1 * 0.1).sqrt();
-        v2[0] = 0.9 / norm;
-        v2[1] = 0.1 / norm;
+        let pv = pq.compress(&rotated);
+        let sim_raw = pq.similarity_raw(&query, &pv);
 
-        // v3 is orthogonal
-        let mut v3 = vec![0.0f32; dim];
-        v3[1] = 1.0;
-
-        let pv1 = comp.compress(&v1);
-        let pv2 = comp.compress(&v2);
-        let pv3 = comp.compress(&v3);
-
-        let sim12 = comp.similarity(&pv1, &pv2);
-        let sim13 = comp.similarity(&pv1, &pv3);
+        // Compare with manual decompress + dot
+        let decompressed = pq.decompress(&pv);
+        let sim_manual: f32 = query.iter().zip(&decompressed).map(|(a, b)| a * b).sum();
 
         assert!(
-            sim12 > sim13,
-            "similar vectors should have higher similarity: sim12={sim12}, sim13={sim13}"
+            (sim_raw - sim_manual).abs() < 1e-6,
+            "similarity_raw={sim_raw} vs manual={sim_manual}"
         );
     }
 
     #[test]
-    fn test_deterministic() {
-        let dim = 16;
-        let c1 = PolarQuantCompressor::new(dim, 42, 4, 8);
-        let c2 = PolarQuantCompressor::new(dim, 42, 4, 8);
-        assert_eq!(c1.rotation_matrix, c2.rotation_matrix);
+    fn test_byte_sizes() {
+        // 384-dim, 4-bit angles, 8-bit radii
+        let pq = PolarQuantizer::new(384, 4, 8);
+        // 192 pairs: angle_bytes = 96, radii_bytes = 192 → 288
+        assert_eq!(pq.angle_bytes(), 96);
+        assert_eq!(pq.radii_bytes(), 192);
+        assert_eq!(pq.bytes_per_vector(), 288);
     }
 }
