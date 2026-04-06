@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
-description = "TurboQuant vector compression: rotation + PolarQuant + QJL residual correction"
+description = "TurboQuant vector compression: rotation + Lloyd-Max + QJL residual correction"
 
 [dependencies]
 ndarray = "0.16"
@@ -25,3 +25,6 @@ name = "basic_index"
 
 [[example]]
 name = "semantic_search"
+
+[[example]]
+name = "components"
