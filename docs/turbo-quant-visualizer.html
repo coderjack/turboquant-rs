@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TurboQuant Algorithm Visualizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: 'Inter', -apple-system, sans-serif; overflow: hidden; display: flex; height: 100vh; }
+
+  #canvas-container { flex: 1; position: relative; }
+  canvas { display: block; }
+
+  #sidebar {
+    width: 360px; background: #12121a; border-left: 1px solid #2a2a3a;
+    display: flex; flex-direction: column; padding: 24px;
+    overflow-y: auto;
+  }
+
+  #sidebar h1 { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  #sidebar .subtitle { font-size: 12px; color: #888; margin-bottom: 24px; }
+
+  .step-indicator {
+    display: flex; gap: 6px; margin-bottom: 20px;
+  }
+  .step-dot {
+    width: 32px; height: 4px; border-radius: 2px; background: #2a2a3a;
+    transition: background 0.3s;
+  }
+  .step-dot.active { background: #6c8cff; }
+  .step-dot.done { background: #3a4a6a; }
+
+  #step-title {
+    font-size: 15px; font-weight: 600; color: #6c8cff;
+    margin-bottom: 8px; min-height: 20px;
+  }
+  #step-desc {
+    font-size: 13px; line-height: 1.6; color: #aaa;
+    margin-bottom: 20px; min-height: 100px;
+  }
+  #step-desc strong { color: #ccc; }
+  #step-desc code {
+    background: #1a1a2a; padding: 1px 5px; border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8cacff;
+  }
+
+  .controls {
+    display: flex; gap: 8px; margin-bottom: 24px;
+  }
+  .controls button {
+    flex: 1; padding: 10px 0; border: 1px solid #3a3a4a; border-radius: 6px;
+    background: #1a1a2a; color: #ccc; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .controls button:hover { background: #2a2a3a; border-color: #6c8cff; color: #fff; }
+  .controls button:disabled { opacity: 0.3; cursor: default; }
+  .controls button.primary { background: #2a3a6a; border-color: #6c8cff; color: #fff; }
+
+  #stats {
+    background: #1a1a2a; border-radius: 8px; padding: 14px;
+    font-size: 12px; line-height: 1.8; font-family: 'JetBrains Mono', monospace;
+  }
+  #stats .label { color: #666; }
+  #stats .value { color: #8cacff; }
+  #stats .highlight { color: #6cffb0; }
+
+  .legend { margin-top: 16px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  #matrix-display {
+    background: #1a1a2a; border-radius: 8px; padding: 12px; margin-top: 16px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8cacff;
+    display: none; line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<div id="sidebar">
+  <h1>TurboQuant Visualizer</h1>
+  <div class="subtitle">Interactive 3D algorithm walkthrough</div>
+
+  <div class="step-indicator" id="step-dots"></div>
+
+  <div id="step-title"></div>
+  <div id="step-desc"></div>
+
+  <div class="controls">
+    <button id="btn-prev" disabled>&larr; Prev</button>
+    <button id="btn-next" class="primary">Next &rarr;</button>
+    <button id="btn-auto">Auto</button>
+  </div>
+
+  <div id="stats"></div>
+
+  <div class="legend" id="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#ff4466"></div>Vector 1</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#44ff88"></div>Vector 2</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#4488ff"></div>Vector 3</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ffaa44"></div>Vector 4</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#cc66ff"></div>Vector 5</div>
+  </div>
+
+  <div id="matrix-display"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// =====================================================================
+// Config
+// =====================================================================
+const COLORS = [0xff4466, 0x44ff88, 0x4488ff, 0xffaa44, 0xcc66ff];
+const ANIM_DURATION = 1500; // ms per transition
+const LLOYD_MAX_BITS = 2;
+
+// 5 spread-out unit vectors
+const RAW_VECTORS = [
+  [0.8, 0.5, 0.3],
+  [-0.3, 0.9, 0.3],
+  [0.2, -0.4, 0.9],
+  [-0.7, -0.5, 0.5],
+  [0.5, 0.1, -0.9],
+].map(normalize);
+
+// =====================================================================
+// Math utilities
+// =====================================================================
+function normalize(v) {
+  const n = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+  return v.map(x => x / n);
+}
+
+function dot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+function norm(v) { return Math.sqrt(dot(v, v)); }
+function sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function add(a, b) { return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]; }
+function scale(v, s) { return v.map(x => x * s); }
+
+// Deterministic 3x3 orthogonal matrix via Gram-Schmidt on fixed seed
+function makeRotationMatrix() {
+  // Use a fixed "random" matrix, then orthogonalize
+  const raw = [
+    [0.3, -0.8, 0.5],
+    [0.9, 0.2, -0.4],
+    [-0.1, 0.6, 0.8],
+  ];
+  // Gram-Schmidt
+  const u0 = normalize(raw[0]);
+  let u1 = raw[1];
+  u1 = sub(u1, scale(u0, dot(u1, u0)));
+  u1 = normalize(u1);
+  let u2 = raw[2];
+  u2 = sub(u2, scale(u0, dot(u2, u0)));
+  u2 = sub(u2, scale(u1, dot(u2, u1)));
+  u2 = normalize(u2);
+  return [u0, u1, u2]; // rows of Q
+}
+
+function applyMatrix(Q, v) {
+  return [dot(Q[0], v), dot(Q[1], v), dot(Q[2], v)];
+}
+
+// Lloyd-Max centroids for N(0, σ) with b bits
+function lloydMaxCentroids(sigma, bits) {
+  const nLevels = 1 << bits;
+  const range = 4 * sigma;
+  let centroids = [];
+  for (let i = 0; i < nLevels; i++) {
+    centroids.push(-range + (2 * range) * (i + 0.5) / nLevels);
+  }
+  // Iterate Lloyd-Max
+  for (let iter = 0; iter < 50; iter++) {
+    const bounds = [-range];
+    for (let i = 0; i < nLevels - 1; i++) {
+      bounds.push(0.5 * (centroids[i] + centroids[i + 1]));
+    }
+    bounds.push(range);
+
+    const newC = [];
+    let maxChange = 0;
+    for (let i = 0; i < nLevels; i++) {
+      const [num, den] = gaussianConditionalMean(bounds[i], bounds[i+1], sigma);
+      const c = den > 1e-12 ? num / den : centroids[i];
+      maxChange = Math.max(maxChange, Math.abs(c - centroids[i]));
+      newC.push(c);
+    }
+    centroids = newC;
+    if (maxChange < 1e-8) break;
+  }
+  return centroids.sort((a, b) => a - b);
+}
+
+function gaussianConditionalMean(a, b, sigma) {
+  const N = 100;
+  const h = (b - a) / N;
+  let num = 0, den = 0;
+  for (let i = 0; i <= N; i++) {
+    const x = a + i * h;
+    const p = Math.exp(-x*x / (2*sigma*sigma));
+    const w = (i === 0 || i === N) ? 0.5 : 1.0;
+    num += w * x * p;
+    den += w * p;
+  }
+  return [num * h, den * h];
+}
+
+function quantize(val, centroids) {
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < centroids.length; i++) {
+    const d = Math.abs(val - centroids[i]);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return best;
+}
+
+// =====================================================================
+// Compute all pipeline stages
+// =====================================================================
+const Q = makeRotationMatrix();
+const sigma = 1.0 / Math.sqrt(3);
+const centroids = lloydMaxCentroids(sigma, LLOYD_MAX_BITS);
+
+const rotatedVecs = RAW_VECTORS.map(v => applyMatrix(Q, v));
+const quantizedVecs = rotatedVecs.map(v =>
+  v.map(c => centroids[quantize(c, centroids)])
+);
+const residualVecs = rotatedVecs.map((v, i) => sub(v, quantizedVecs[i]));
+const signBits = residualVecs.map(r => r.map(c => c >= 0 ? 1 : -1));
+
+// =====================================================================
+// Three.js Scene Setup
+// =====================================================================
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a0f);
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+camera.position.set(2.2, 1.8, 2.5);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 1.5;
+controls.maxDistance = 8;
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x404060, 1.5));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(3, 5, 4);
+scene.add(dirLight);
+
+// Grid floor
+const gridHelper = new THREE.GridHelper(4, 20, 0x1a1a2a, 0x1a1a2a);
+gridHelper.position.y = -1.2;
+scene.add(gridHelper);
+
+// Axes (subtle)
+const axesMat = new THREE.LineBasicMaterial({ color: 0x333344 });
+for (const dir of [[2,0,0],[0,2,0],[0,0,2]]) {
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-dir[0],-dir[1],-dir[2]),
+    new THREE.Vector3(...dir)
+  ]);
+  scene.add(new THREE.Line(geo, axesMat));
+}
+
+// Unit sphere wireframe
+const sphereGeo = new THREE.SphereGeometry(1, 32, 24);
+const sphereMat = new THREE.MeshBasicMaterial({
+  color: 0x2a2a3a, wireframe: true, transparent: true, opacity: 0.15
+});
+const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+scene.add(sphere);
+
+// =====================================================================
+// Arrow helpers
+// =====================================================================
+function createArrow(vec, color, lineWidth) {
+  const dir = new THREE.Vector3(...vec).normalize();
+  const length = norm(vec);
+  const arrow = new THREE.ArrowHelper(dir, new THREE.Vector3(0,0,0), length, color, 0.08, 0.05);
+  // Make shaft thicker
+  if (arrow.line) {
+    arrow.line.material.linewidth = lineWidth || 2;
+  }
+  return arrow;
+}
+
+// Main vector arrows
+const arrowGroups = { original: [], rotated: [], quantized: [], residual: [], signs: [], ghost: [] };
+
+RAW_VECTORS.forEach((v, i) => {
+  const arrow = createArrow(v, COLORS[i]);
+  arrowGroups.original.push(arrow);
+  scene.add(arrow);
+});
+
+// Centroid planes (hidden initially)
+const centroidGroup = new THREE.Group();
+scene.add(centroidGroup);
+centroidGroup.visible = false;
+
+const axisColors = [0xff6666, 0x66ff66, 0x6666ff]; // R, G, B for X, Y, Z
+const axisNames = ['X', 'Y', 'Z'];
+
+centroids.forEach(c => {
+  for (let axis = 0; axis < 3; axis++) {
+    const geo = new THREE.PlaneGeometry(2.5, 2.5);
+    const mat = new THREE.MeshBasicMaterial({
+      color: axisColors[axis], transparent: true, opacity: 0.04,
+      side: THREE.DoubleSide, depthWrite: false
+    });
+    const plane = new THREE.Mesh(geo, mat);
+
+    if (axis === 0) { // X
+      plane.rotation.y = Math.PI / 2;
+      plane.position.x = c;
+    } else if (axis === 1) { // Y
+      plane.rotation.x = Math.PI / 2;
+      plane.position.y = c;
+    } else { // Z
+      plane.position.z = c;
+    }
+    centroidGroup.add(plane);
+  }
+});
+
+// Sign indicators group
+const signGroup = new THREE.Group();
+scene.add(signGroup);
+signGroup.visible = false;
+
+// =====================================================================
+// Animation state
+// =====================================================================
+let currentStep = 0;
+const TOTAL_STEPS = 5;
+let animating = false;
+let animStartTime = 0;
+let animFrom = [];
+let animTo = [];
+let autoPlaying = false;
+let autoTimer = null;
+
+const STEPS = [
+  {
+    title: "Step 0: Original Embedding Vectors",
+    desc: `<strong>5 unit vectors</strong> on the 3D sphere — each represents a high-dimensional embedding (we use 3D for visualization).<br><br>In practice these would be 384 or 768-dimensional vectors from a model like all-MiniLM-L6-v2.<br><br>Raw storage: <code>3 dims &times; 32 bits = 96 bits</code> per vector.`,
+  },
+  {
+    title: "Step 1: Random Orthogonal Rotation",
+    desc: `A <strong>deterministic random rotation</strong> (from a seed) is applied to all vectors.<br><br>The rotation <strong>preserves norms</strong> — vectors stay on the unit sphere. But it <strong>decorrelates coordinates</strong>: after rotation, each coordinate follows &approx; N(0, 1/&radic;d).<br><br>This makes the next step work without any calibration data.`,
+  },
+  {
+    title: "Step 2: Lloyd-Max Quantization",
+    desc: `Each coordinate <strong>snaps to the nearest centroid</strong>. The centroids (colored planes) are <strong>precomputed</strong> to minimize MSE for the Gaussian distribution.<br><br>With <strong>${LLOYD_MAX_BITS}-bit</strong> quantization: ${1 << LLOYD_MAX_BITS} centroids per axis.<br><br>Centroids: <code>[${centroids.map(c => c.toFixed(3)).join(', ')}]</code><br><br>The <strong>dashed lines</strong> show residual error (true &minus; quantized).`,
+  },
+  {
+    title: "Step 3: QJL Residual Correction",
+    desc: `The residual from Step 2 is projected through a <strong>random Gaussian matrix</strong>, and only the <strong>sign bits</strong> are kept (1 bit per dimension).<br><br><span style="color:#6cffb0">Green = positive (+1)</span>, <span style="color:#ff6666">Red = negative (&minus;1)</span><br><br>These sign bits make the inner product estimator <strong>unbiased</strong>: E[&lt;q&#x0303;, x&#x0303;&gt;] = &lt;q, x&gt;.`,
+  },
+  {
+    title: "Result: Compressed Vectors",
+    desc: `<strong>Transparent arrows</strong> = original, <strong>solid arrows</strong> = reconstructed from quantized data.<br><br>Notice reconstructed vectors may <strong>poke outside or fall inside</strong> the sphere — quantizing each coordinate independently changes the norm. This <em>is</em> the quantization error (in practice, the original norm is stored separately and restored).<br><br>Total storage per vector:<br>&nbsp;&nbsp;Lloyd-Max: <code>${LLOYD_MAX_BITS} &times; 3 = ${LLOYD_MAX_BITS * 3} bits</code><br>&nbsp;&nbsp;QJL signs: <code>1 &times; 3 = 3 bits</code><br>&nbsp;&nbsp;Norms: <code>~8 bits</code> (amortized)<br>&nbsp;&nbsp;<strong>Total: ~${LLOYD_MAX_BITS * 3 + 3 + 8} bits</strong> vs 96 bits raw (<strong>${(96 / (LLOYD_MAX_BITS * 3 + 3 + 8)).toFixed(1)}x compression</strong>)`,
+  },
+];
+
+// =====================================================================
+// Step transitions
+// =====================================================================
+function clearExtras() {
+  // Remove residual lines
+  arrowGroups.residual.forEach(a => scene.remove(a));
+  arrowGroups.residual = [];
+  // Remove ghost arrows
+  arrowGroups.ghost.forEach(a => scene.remove(a));
+  arrowGroups.ghost = [];
+  // Hide centroid planes
+  centroidGroup.visible = false;
+  // Hide sign indicators
+  signGroup.visible = false;
+  while (signGroup.children.length) signGroup.remove(signGroup.children[0]);
+}
+
+function setArrowTarget(arrow, vec) {
+  const dir = new THREE.Vector3(...vec).normalize();
+  const len = norm(vec);
+  arrow.setDirection(dir);
+  arrow.setLength(len, 0.08, 0.05);
+}
+
+function lerpVec(a, b, t) {
+  return [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t];
+}
+
+function easeInOut(t) {
+  return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+}
+
+function goToStep(step) {
+  if (animating || step < 0 || step >= TOTAL_STEPS) return;
+  currentStep = step;
+  clearExtras();
+  updateUI();
+
+  if (step === 0) {
+    RAW_VECTORS.forEach((v, i) => setArrowTarget(arrowGroups.original[i], v));
+    arrowGroups.original.forEach(a => { a.visible = true; setArrowOpacity(a, 1); });
+  }
+  else if (step === 1) {
+    // Animate rotation
+    animFrom = RAW_VECTORS.slice();
+    animTo = rotatedVecs.slice();
+    startAnimation();
+  }
+  else if (step === 2) {
+    // Show rotated, then animate to quantized, show centroids + residuals
+    rotatedVecs.forEach((v, i) => setArrowTarget(arrowGroups.original[i], v));
+    centroidGroup.visible = true;
+    animFrom = rotatedVecs.slice();
+    animTo = quantizedVecs.slice();
+    startAnimation(() => {
+      // After snap, show residual lines
+      rotatedVecs.forEach((rv, i) => {
+        const qv = quantizedVecs[i];
+        const geo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(...qv),
+          new THREE.Vector3(...rv),
+        ]);
+        const mat = new THREE.LineDashedMaterial({
+          color: COLORS[i], dashSize: 0.03, gapSize: 0.02, transparent: true, opacity: 0.7
+        });
+        const line = new THREE.Line(geo, mat);
+        line.computeLineDistances();
+        arrowGroups.residual.push(line);
+        scene.add(line);
+      });
+    });
+  }
+  else if (step === 3) {
+    // Show quantized arrows + sign bits
+    quantizedVecs.forEach((v, i) => setArrowTarget(arrowGroups.original[i], v));
+    centroidGroup.visible = true;
+    signGroup.visible = true;
+
+    // Create sign indicators at each quantized endpoint
+    quantizedVecs.forEach((qv, i) => {
+      for (let axis = 0; axis < 3; axis++) {
+        const sign = signBits[i][axis];
+        const color = sign > 0 ? 0x66ffaa : 0xff6666;
+        const label = sign > 0 ? '+' : '-';
+
+        const spriteMat = new THREE.SpriteMaterial({
+          map: makeTextTexture(label, color),
+          transparent: true, depthTest: false
+        });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.scale.set(0.12, 0.12, 1);
+
+        // Position near the endpoint, offset by axis
+        const pos = [...qv];
+        pos[axis] += (sign > 0 ? 0.08 : -0.08);
+        sprite.position.set(...pos);
+        signGroup.add(sprite);
+      }
+    });
+  }
+  else if (step === 4) {
+    // Show original (ghost) + reconstructed (solid)
+    RAW_VECTORS.forEach((v, i) => {
+      const ghost = createArrow(v, COLORS[i]);
+      setArrowOpacity(ghost, 0.2);
+      arrowGroups.ghost.push(ghost);
+      scene.add(ghost);
+    });
+    quantizedVecs.forEach((v, i) => {
+      setArrowTarget(arrowGroups.original[i], v);
+      setArrowOpacity(arrowGroups.original[i], 1);
+    });
+    updateStats();
+  }
+}
+
+function startAnimation(onComplete) {
+  animating = true;
+  animStartTime = performance.now();
+  const from = animFrom.map(v => [...v]);
+  const to = animTo.map(v => [...v]);
+
+  function tick() {
+    const elapsed = performance.now() - animStartTime;
+    const t = Math.min(elapsed / ANIM_DURATION, 1);
+    const eased = easeInOut(t);
+
+    from.forEach((fv, i) => {
+      const interp = lerpVec(fv, to[i], eased);
+      setArrowTarget(arrowGroups.original[i], interp);
+    });
+
+    if (t < 1) {
+      requestAnimationFrame(tick);
+    } else {
+      animating = false;
+      if (onComplete) onComplete();
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+function setArrowOpacity(arrow, opacity) {
+  arrow.traverse(child => {
+    if (child.material) {
+      child.material.transparent = true;
+      child.material.opacity = opacity;
+    }
+  });
+}
+
+// =====================================================================
+// Text texture for sign labels
+// =====================================================================
+function makeTextTexture(text, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 32, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+
+// =====================================================================
+// UI
+// =====================================================================
+const stepDotsEl = document.getElementById('step-dots');
+const stepTitleEl = document.getElementById('step-title');
+const stepDescEl = document.getElementById('step-desc');
+const statsEl = document.getElementById('stats');
+const matrixEl = document.getElementById('matrix-display');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+const btnAuto = document.getElementById('btn-auto');
+
+// Create step dots
+for (let i = 0; i < TOTAL_STEPS; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'step-dot';
+  stepDotsEl.appendChild(dot);
+}
+
+function updateUI() {
+  // Step dots
+  document.querySelectorAll('.step-dot').forEach((dot, i) => {
+    dot.className = 'step-dot' + (i === currentStep ? ' active' : i < currentStep ? ' done' : '');
+  });
+
+  // Text
+  stepTitleEl.textContent = STEPS[currentStep].title;
+  stepDescEl.innerHTML = STEPS[currentStep].desc;
+
+  // Buttons
+  btnPrev.disabled = currentStep === 0;
+  btnNext.disabled = currentStep === TOTAL_STEPS - 1;
+
+  // Matrix display
+  if (currentStep === 1) {
+    matrixEl.style.display = 'block';
+    matrixEl.innerHTML = '<span style="color:#666">Rotation matrix Q:</span><br>' +
+      Q.map(row => '[' + row.map(v => (v >= 0 ? '+' : '') + v.toFixed(3)).join(', ') + ']').join('<br>');
+  } else {
+    matrixEl.style.display = 'none';
+  }
+
+  // Stats panel
+  if (currentStep < 4) {
+    statsEl.innerHTML = '';
+  }
+}
+
+function updateStats() {
+  let html = '';
+  RAW_VECTORS.forEach((v, i) => {
+    const qv = quantizedVecs[i];
+    // Cosine in rotated domain
+    const rv = rotatedVecs[i];
+    const d = dot(rv, qv);
+    const cosine = d / (norm(rv) * norm(qv));
+    const error = norm(sub(rv, qv));
+    const colorHex = '#' + COLORS[i].toString(16).padStart(6, '0');
+    html += `<span style="color:${colorHex}">V${i+1}</span> <span class="label">cos:</span> <span class="value">${cosine.toFixed(4)}</span> <span class="label">err:</span> <span class="value">${error.toFixed(4)}</span><br>`;
+  });
+  const avgCos = RAW_VECTORS.reduce((sum, _, i) => {
+    const rv = rotatedVecs[i], qv = quantizedVecs[i];
+    return sum + dot(rv, qv) / (norm(rv) * norm(qv));
+  }, 0) / RAW_VECTORS.length;
+  html += `<br><span class="label">Avg cosine:</span> <span class="highlight">${avgCos.toFixed(4)}</span>`;
+  html += `<br><span class="label">Compression:</span> <span class="highlight">${(96 / (LLOYD_MAX_BITS * 3 + 3 + 8)).toFixed(1)}x</span>`;
+  statsEl.innerHTML = html;
+}
+
+btnPrev.addEventListener('click', () => { stopAuto(); goToStep(currentStep - 1); });
+btnNext.addEventListener('click', () => { stopAuto(); goToStep(currentStep + 1); });
+btnAuto.addEventListener('click', () => {
+  if (autoPlaying) { stopAuto(); return; }
+  autoPlaying = true;
+  btnAuto.textContent = 'Stop';
+  btnAuto.style.borderColor = '#ff6666';
+  if (currentStep >= TOTAL_STEPS - 1) goToStep(0);
+  autoTimer = setInterval(() => {
+    if (!animating) {
+      if (currentStep < TOTAL_STEPS - 1) {
+        goToStep(currentStep + 1);
+      } else {
+        stopAuto();
+      }
+    }
+  }, 2500);
+});
+
+function stopAuto() {
+  autoPlaying = false;
+  clearInterval(autoTimer);
+  btnAuto.textContent = 'Auto';
+  btnAuto.style.borderColor = '';
+}
+
+// =====================================================================
+// Resize
+// =====================================================================
+function onResize() {
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+// =====================================================================
+// Render loop
+// =====================================================================
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// Initialize
+goToStep(0);
+</script>
+</body>
+</html>

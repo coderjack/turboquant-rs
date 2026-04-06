@@ -42,6 +42,8 @@ Output: 248 bytes (6.2x compression, 5.17 bits/dim)
 
 The rotation decorrelates coordinates so each follows a known Gaussian. Lloyd-Max finds the provably optimal quantization centroids for this distribution (within 2.7x of information-theoretic lower bound). QJL corrects the residual, making the inner product estimator **unbiased**.
 
+> **Interactive demo:** Open [`docs/turbo-quant-visualizer.html`](docs/turbo-quant-visualizer.html) in a browser to see the algorithm animate on 3D vectors — step through rotation, quantization, and QJL correction with orbit controls.
+
 ## Compression Numbers
 
 Measured on 384-dim random unit vectors (from `cargo test --test compression_claims`):
